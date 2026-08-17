@@ -3,9 +3,11 @@
 #include <cstdio>
 #include <map>
 #include <string>
-#include <cstring> 
+#include <cstring>
 #include <iostream>
 using namespace std;
+
+static double g_ana_total = 0.0;  // diagnostic: cumulative AnalysisStuff time
 
 #include <time.h>
 
@@ -1770,7 +1772,7 @@ void bssn_class::RecursiveStep(int lev)
 //================================================================================================
 void bssn_class::Step(int lev, int YN)
 {
-  static double last_wait = 0.0; static long last_n = 0;
+  static double last_wait = 0.0; static long last_n = 0; static double last_ana = 0.0;
   double t_step0 = MPI_Wtime();
   setpbh(BH_num, Porg0, Mass, BH_num_input);
 
@@ -1812,7 +1814,9 @@ void bssn_class::Step(int lev, int YN)
   // Warning NOTE: the variables1 are used as temp storege room
   if (lev == a_lev)
   {
+    double t_ana0 = MPI_Wtime();
     AnalysisStuff(lev, dT_lev);
+    g_ana_total += MPI_Wtime() - t_ana0;
   }
 
   bool BB = fgt(PhysTime, StartTime, dT_lev / 2);
@@ -2130,9 +2134,10 @@ void bssn_class::Step(int lev, int YN)
   if (myrank == 0) {
     double dw = Parallel::tfer_wait() - last_wait;
     long dn = Parallel::tfer_n() - last_n;
-    printf("STEP lev=%d YN=%d wall=%.4f tfer_wait=%.4f n=%ld avg=%.6f\n",
-           lev, YN, MPI_Wtime() - t_step0, dw, dn, dn > 0 ? dw / dn : 0.0);
-    last_wait = Parallel::tfer_wait(); last_n = Parallel::tfer_n();
+    double da = g_ana_total - last_ana;
+    printf("STEP lev=%d YN=%d wall=%.4f tfer=%.4f n=%ld avg=%.6f ana=%.4f\n",
+           lev, YN, MPI_Wtime() - t_step0, dw, dn, dn > 0 ? dw / dn : 0.0, da);
+    last_wait = Parallel::tfer_wait(); last_n = Parallel::tfer_n(); last_ana = g_ana_total;
   }
 }
 
