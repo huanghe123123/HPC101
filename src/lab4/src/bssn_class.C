@@ -1770,6 +1770,8 @@ void bssn_class::RecursiveStep(int lev)
 //================================================================================================
 void bssn_class::Step(int lev, int YN)
 {
+  static double last_wait = 0.0; static long last_n = 0;
+  double t_step0 = MPI_Wtime();
   setpbh(BH_num, Porg0, Mass, BH_num_input);
 
   double dT_lev = dT * pow(0.5, Mymax(lev, trfls));
@@ -2122,6 +2124,15 @@ void bssn_class::Step(int lev, int YN)
       Porg0[ithBH][1] = Porg1[ithBH][1];
       Porg0[ithBH][2] = Porg1[ithBH][2];
     }
+  }
+
+  // diagnostic: per-step time breakdown (transfer wait vs compute)
+  if (myrank == 0) {
+    double dw = Parallel::tfer_wait() - last_wait;
+    long dn = Parallel::tfer_n() - last_n;
+    printf("STEP lev=%d YN=%d wall=%.4f tfer_wait=%.4f n=%ld avg=%.6f\n",
+           lev, YN, MPI_Wtime() - t_step0, dw, dn, dn > 0 ? dw / dn : 0.0);
+    last_wait = Parallel::tfer_wait(); last_n = Parallel::tfer_n();
   }
 }
 

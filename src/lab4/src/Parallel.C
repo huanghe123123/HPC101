@@ -10,6 +10,12 @@
 #include "helper.h"
 #endif
 
+// --- diagnostic: cumulative MPI transfer wait time (load-balance analysis) ---
+static double g_tfer_wait = 0.0;
+static long   g_tfer_n    = 0;
+double Parallel::tfer_wait() { return g_tfer_wait; }
+long   Parallel::tfer_n()    { return g_tfer_n; }
+
 int Parallel::partition1(int &nx, int split_size, int min_width, int cpusize, int shape) // special for 1 diemnsion
 {
     nx = Mymax(1, shape / min_width);
@@ -2513,6 +2519,7 @@ void Parallel::transfer(MyList<Parallel::gridseg> **src, MyList<Parallel::gridse
                                                 MyList<var> *VarList1 /* source */, MyList<var> *VarList2 /*target */,
                                                 int Symmetry)
 {
+    double t0 = MPI_Wtime();
     int myrank, cpusize;
     MPI_Comm_size(MPI_COMM_WORLD, &cpusize);
     MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
@@ -2592,6 +2599,9 @@ void Parallel::transfer(MyList<Parallel::gridseg> **src, MyList<Parallel::gridse
     delete[] stats;
     delete[] send_data;
     delete[] rec_data;
+
+    g_tfer_wait += MPI_Wtime() - t0;
+    g_tfer_n++;
 }
 //
 void Parallel::transfermix(MyList<Parallel::gridseg> **src, MyList<Parallel::gridseg> **dst,

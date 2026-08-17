@@ -213,6 +213,8 @@ namespace Parallel
     void checkpatchlist(MyList<Patch> *PatL, bool buflog);
 
     double L2Norm(Patch *Pat, var *vf, MPI_Comm Comm_here);
+    double tfer_wait();  // diagnostic: cumulative transfer wait (s)
+    long   tfer_n();     // diagnostic: transfer call count
     bool PatList_Interp_Points(MyList<Patch> *PatL, MyList<var> *VarList,
                                                          int NN, double **XX,
                                                          double *Shellf, int Symmetry, MPI_Comm Comm_here);
