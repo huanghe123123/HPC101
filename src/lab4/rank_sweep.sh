@@ -27,6 +27,8 @@ echo "==> 节点环境 (NUMA/绑核方向)" | tee -a "$LOG"
 lscpu | grep -E "^CPU\(s\)|^Socket|^NUMA|^Core|^Thread|Model name" | tee -a "$LOG"
 numactl -H 2>/dev/null | head -25 | tee -a "$LOG" || echo "numactl 不可用" | tee -a "$LOG"
 echo "==> 当前 mpiexec: $(grep -E 'AMSS_MPIEXEC|mpiexec' run.sh | head -2 | tr '\n' ' ')" | tee -a "$LOG"
+echo "==> cpuset: $(grep Cpus_allowed_list /proc/self/status 2>/dev/null)" | tee -a "$LOG"
+echo "==> taskset: $(taskset -pc $$ 2>/dev/null)" | tee -a "$LOG"
 echo | tee -a "$LOG"
 
 # 计算节点无 build( .gitignore 不同步), 先编译一次
