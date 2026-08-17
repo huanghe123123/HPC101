@@ -408,9 +408,12 @@ void Patch::Interp_Points(MyList<var> *VarList,
     cudaFree(d_shellf);
     cudaFree(d_weight);
 #else
+#pragma omp parallel for
     for (int j = 0; j < NN; j++)
     {
         double pox[dim];
+        double llb_[dim], uub_[dim];
+        MyList<var> *varl_ = VarList;
         for (int i = 0; i < dim; i++)
             pox[i] = XX[i][j];
 
@@ -423,10 +426,10 @@ void Patch::Interp_Points(MyList<var> *VarList,
             bool flag = true;
             for (int i = 0; i < dim; i++)
             {
-                llb[i] = (feq(BP->bbox[i], bbox[i], DH[i] / 2)) ? BP->bbox[i] + lli[i] * DH[i] : BP->bbox[i] + ghost_width * DH[i];
-                uub[i] = (feq(BP->bbox[dim + i], bbox[dim + i], DH[i] / 2)) ? BP->bbox[dim + i] - uui[i] * DH[i] : BP->bbox[dim + i] - ghost_width * DH[i];
+                llb_[i] = (feq(BP->bbox[i], bbox[i], DH[i] / 2)) ? BP->bbox[i] + lli[i] * DH[i] : BP->bbox[i] + ghost_width * DH[i];
+                uub_[i] = (feq(BP->bbox[dim + i], bbox[dim + i], DH[i] / 2)) ? BP->bbox[dim + i] - uui[i] * DH[i] : BP->bbox[dim + i] - ghost_width * DH[i];
 
-                if (XX[i][j] - llb[i] < -DH[i] / 2 || XX[i][j] - uub[i] > DH[i] / 2)
+                if (XX[i][j] - llb_[i] < -DH[i] / 2 || XX[i][j] - uub_[i] > DH[i] / 2)
                 {
                     flag = false;
                     break;
@@ -438,13 +441,13 @@ void Patch::Interp_Points(MyList<var> *VarList,
                 notfind = false;
                 if (myrank == BP->rank)
                 {
-                    varl = VarList;
+                    varl_ = VarList;
                     int k = 0;
-                    while (varl)
+                    while (varl_)
                     {
-                        f_global_interp(BP->shape, BP->X[0], BP->X[1], BP->X[2], BP->fgfs[varl->data->sgfn], shellf[j * num_var + k],
-                                        pox[0], pox[1], pox[2], ordn, varl->data->SoA, Symmetry);
-                        varl = varl->next;
+                        f_global_interp(BP->shape, BP->X[0], BP->X[1], BP->X[2], BP->fgfs[varl_->data->sgfn], shellf[j * num_var + k],
+                                        pox[0], pox[1], pox[2], ordn, varl_->data->SoA, Symmetry);
+                        varl_ = varl_->next;
                         k++;
                     }
                     weight[j] = 1;
