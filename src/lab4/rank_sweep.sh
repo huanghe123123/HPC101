@@ -1,9 +1,9 @@
 #!/bin/bash
 # rank_sweep.sh — 对比不同 MPI rank 数的单步演化时间(快速探索用)
 #
-# 用法: bash rank_sweep.sh 9 15 30
-# 行为: 对每个 rank 数, 备份 → 改 AMSS_NCKU_Input.py 的 MPI_processes → 跑
-#        ./run.sh --twop-cache (4 步, 初值缓存命中) → 恢复原 Input.py。
+# 用法: bash rank_sweep.sh 9 15:2 30   (rank:omp, 默认 omp=1)
+# 行为: 对每个 rank/omp 组合, 备份 → 改 AMSS_NCKU_Input.py 的 MPI_processes 和
+#        OMP_threads → 跑 ./run.sh --twop-cache (4 步, 初值缓存命中) → 恢复原 Input.py。
 # 指标: 演化时间取 run.sh 日志的 "Total Evolve Time" (不受绘图异常影响)。
 # 环境: 输出节点 lscpu / numactl, 供 NUMA/绑核方向分析。
 # 安全: Input.py 用 cp 备份, trap EXIT 恢复; 不改其他任何文件。
@@ -35,8 +35,13 @@ echo | tee -a "$LOG"
 bash compile.sh 2>&1 | tail -2 | tee -a "$LOG"
 
 for R in "$@"; do
-  sed -i "s/^MPI_processes    = .*/MPI_processes    = $R/" "$INPUT"
-  echo "########## MPI=$R ##########" | tee -a "$LOG"
+  case "$R" in
+    *:*) RANK="${R%%:*}"; OMP="${R##*:}" ;;
+    *)   RANK="$R";       OMP=1 ;;
+  esac
+  sed -i "s/^MPI_processes    = .*/MPI_processes    = $RANK/" "$INPUT"
+  sed -i "s/^OMP_threads      = .*/OMP_threads      = $OMP/" "$INPUT"
+  echo "########## MPI=$RANK OMP=$OMP ##########" | tee -a "$LOG"
   ./run.sh --twop-cache 2>&1 | tee -a "$LOG" | grep -aE "Running ./ABE|Timestep #|Total Evolve Time|This Program Cost"
 done
 
