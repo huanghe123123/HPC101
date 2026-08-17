@@ -7,6 +7,7 @@
 #include <string>
 #include <cmath>
 #include <new>
+#include <algorithm>
 using namespace std;
 
 #include "misc.h"
@@ -408,9 +409,20 @@ void Patch::Interp_Points(MyList<var> *VarList,
     cudaFree(d_shellf);
     cudaFree(d_weight);
 #else
+    // sort interpolation points by 3D position for cache-friendly access
+    int *idx = new int[NN];
+    for (int j = 0; j < NN; j++) idx[j] = j;
+    std::sort(idx, idx + NN, [&](int a, int b) {
+        if (XX[0][a] < XX[0][b]) return true;
+        if (XX[0][b] < XX[0][a]) return false;
+        if (XX[1][a] < XX[1][b]) return true;
+        if (XX[1][b] < XX[1][a]) return false;
+        return XX[2][a] < XX[2][b];
+    });
 #pragma omp parallel for
-    for (int j = 0; j < NN; j++)
+    for (int jj = 0; jj < NN; jj++)
     {
+        int j = idx[jj];
         double pox[dim];
         double llb_[dim], uub_[dim];
         MyList<var> *varl_ = VarList;
@@ -458,6 +470,7 @@ void Patch::Interp_Points(MyList<var> *VarList,
             Bp = Bp->next;
         }
     }
+    delete[] idx;
 #endif
 
     // ================== GPU 零拷贝重构部分 结束 ==================
