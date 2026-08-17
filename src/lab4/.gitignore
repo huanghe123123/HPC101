@@ -6,4 +6,6 @@ twopuncture_cache/
 *.o
 *.log
 .vscode/
-.out
+.out*.out
+perf_profiles/
+rank_sweep.log

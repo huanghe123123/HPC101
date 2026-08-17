@@ -8,3 +8,6 @@ build/
 
 # python
 __pycache__/
+
+# job outputs
+*.out
