@@ -64,6 +64,7 @@ integer, parameter :: NO_SYMM=0, OCTANT=2
 
   call symmetry_bd(3,ex,f,fh,SoA)
 
+    !$omp parallel do
   do k=1,ex(3)
   do j=1,ex(2)
   do i=1,ex(1)

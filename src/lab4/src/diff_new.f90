@@ -72,6 +72,7 @@
   fy = ZEO
   fz = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -226,6 +227,7 @@
 
   fx = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -302,6 +304,7 @@
 
   fy = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -372,6 +375,7 @@
 
   fz = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -476,6 +480,7 @@
   fxz = ZEO
   fyz = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -651,6 +656,7 @@
 
   fxx = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -718,6 +724,7 @@
 
   fyy = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -787,6 +794,7 @@
 
   fzz = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -856,6 +864,7 @@
 
   fxy = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -926,6 +935,7 @@
 
   fxz = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -994,6 +1004,7 @@
 
   fyz = ZEO
 
+    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
