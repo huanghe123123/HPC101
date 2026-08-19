@@ -7,7 +7,12 @@
 # lab root. Extra args (e.g. -DAMSS_ENABLE_GPU=ON) override at the end.
 set -euo pipefail
 
-ROOT_DIR="$(pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${AMSS_ROOT_DIR:-$SCRIPT_DIR}"
+case "$ROOT_DIR" in
+  /*) ;;
+  *) ROOT_DIR="$SCRIPT_DIR/$ROOT_DIR" ;;
+esac
 CMAKE="${CMAKE:-cmake}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
@@ -36,8 +41,28 @@ fi
 [[ -n "${AMSS_ENABLE_GPU:-}" ]]    && cmake_args+=("-DAMSS_ENABLE_GPU=$AMSS_ENABLE_GPU")
 [[ -n "${AMSS_CUDA_ARCHITECTURES:-}" ]] && cmake_args+=("-DCMAKE_CUDA_ARCHITECTURES=$AMSS_CUDA_ARCHITECTURES")
 [[ -n "${AMSS_ARCH_FLAGS:-}" ]]    && cmake_args+=("-DAMSS_ARCH_FLAGS=$AMSS_ARCH_FLAGS")
-[[ -n "${AMSS_ENABLE_OPENMP:-}" ]] && cmake_args+=("-DAMSS_ENABLE_OPENMP=$AMSS_ENABLE_OPENMP")
 [[ -n "${AMSS_MPI_CUDA_AWARE:-}" ]] && cmake_args+=("-DAMSS_MPI_CUDA_AWARE=$AMSS_MPI_CUDA_AWARE")
+
+# Keep an OJ invocation of `compile.sh` on the validated CPU path even when
+# its build directory contains a cache from an older checkout.  Explicit
+# command-line -D options are appended after these defaults and therefore
+# still override them for experiments.
+cmake_args+=(
+  "-DAMSS_ENABLE_OPENMP=${AMSS_ENABLE_OPENMP:-ON}"
+  "-DAMSS_TWOP_OPENMP=${AMSS_TWOP_OPENMP:-ON}"
+  "-DAMSS_TWOP_DEFAULT_NRELAX=${AMSS_TWOP_DEFAULT_NRELAX:-10}"
+  "-DAMSS_RHS_LOCALITY=${AMSS_RHS_LOCALITY:-POINTWISE}"
+  "-DAMSS_BATCH_STENCIL=${AMSS_BATCH_STENCIL:-ON}"
+  "-DAMSS_RHS_NAN_CHECK=${AMSS_RHS_NAN_CHECK:-OFF}"
+  "-DAMSS_FINE_PREDICTOR_EVOLVE=${AMSS_FINE_PREDICTOR_EVOLVE:-ON}"
+  "-DAMSS_RHS_WORKSPACE_POOL=${AMSS_RHS_WORKSPACE_POOL:-ON}"
+  "-DAMSS_VACUUM_BSSN=${AMSS_VACUUM_BSSN:-ON}"
+  "-DAMSS_FUSED_RHS_TAIL=${AMSS_FUSED_RHS_TAIL:-ON}"
+  "-DAMSS_RHS_BULK_SIMD=${AMSS_RHS_BULK_SIMD:-OFF}"
+  "-DAMSS_FGFS_COLORED_SLAB=${AMSS_FGFS_COLORED_SLAB:-OFF}"
+  "-DAMSS_RHS_TILE_J=${AMSS_RHS_TILE_J:-0}"
+  "-DAMSS_RHS_TILE_K=${AMSS_RHS_TILE_K:-0}"
+)
 
 echo "==> Configure: $CMAKE -S \"$ROOT_DIR\" -B \"$BUILD_DIR\" ${cmake_args[*]:-} $*"
 "$CMAKE" -S "$ROOT_DIR" -B "$BUILD_DIR" "${cmake_args[@]}" "$@"

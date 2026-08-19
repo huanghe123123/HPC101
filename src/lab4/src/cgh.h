@@ -79,6 +79,7 @@ public:
       double *d_shellf, int *d_weight, int Symmetry
    );
 #endif
+
 };
 
 #endif /* CGH_H */

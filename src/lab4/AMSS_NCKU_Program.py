@@ -22,6 +22,8 @@
 ##   AMSS_OUTPUT_ROOT  run directory parent  (default: <lab4>)
 ##   AMSS_CACHE_DIR    TwoPuncture cache root (default: <lab4>/twopuncture_cache)
 ##   AMSS_MPIEXEC      MPI launcher          (default: mpiexec)
+##   AMSS_TWOP_THREADS standalone solver threads (default: OMP_threads)
+##   AMSS_TWOP_NRELAX  line-preconditioner sweeps (default: solver default)
 ##
 ##################################################################
 
@@ -114,8 +116,15 @@ for exe in (abe_built, twop_built):
         sys.exit(f" Missing executable: {exe}\n"
                  f" Build first:  cmake -B build -S .  &&  cmake --build build -j")
 
-## OpenMP threads per MPI rank (inherited by the mpirun child process)
-os.environ["OMP_NUM_THREADS"] = str(input_data.OMP_threads)
+## The standalone TwoPuncture solve runs before MPI/ABE and may use the
+## otherwise idle physical cores.  Keep its thread count separate from the
+## evolution rank setting; the latter is restored before mpiexec starts.
+EVOLUTION_OMP_THREADS = str(input_data.OMP_threads)
+TWOP_THREADS = os.environ.get("AMSS_TWOP_THREADS", "30").strip()
+if not TWOP_THREADS:
+    TWOP_THREADS = "30"
+os.environ.setdefault("AMSS_TWOP_NRELAX", "10")
+os.environ["OMP_NUM_THREADS"] = TWOP_THREADS
 
 ## TwoPuncture initial-data cache (opt-in, for fast debugging)
 TWOP_CACHE   = os.environ.get("AMSS_NCKU_TWOP_CACHE", "") == "1"
@@ -141,7 +150,7 @@ print(f"==> Output   : {File_directory}")
 print(f"==> Cache    : {CACHE_ROOT}")
 
 _safe_rmtree(File_directory)
-os.mkdir(File_directory)
+os.makedirs(File_directory, exist_ok=True)
 shutil.copy("AMSS_NCKU_Input.py", File_directory)
 
 output_directory         = os.path.join(File_directory, "AMSS_NCKU_output")
@@ -222,6 +231,10 @@ else:
             shutil.copy2(os.path.join(output_directory, f),
                          os.path.join(cache_dir, f))
         print(f" TwoPuncture output cached ({key})")
+
+# TwoPuncture is complete (or was served from cache).  ABE keeps the original
+# per-MPI-rank setting, normally OMP_NUM_THREADS=1 for the formal CPU path.
+os.environ["OMP_NUM_THREADS"] = EVOLUTION_OMP_THREADS
 
 ##################################################################
 ## Update puncture parameters from the TwoPuncture output, then

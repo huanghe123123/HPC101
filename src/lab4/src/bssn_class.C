@@ -1566,7 +1566,19 @@ void bssn_class::Evolve(int Steps)
 
     // misc::tillherecheck("before Constraint_Out");
 
+#ifdef AMSS_LEVEL_DIAG
+    double t_constraint0 = MPI_Wtime();
+    long n_constraint0 = Parallel::tfer_n();
+    double wait_constraint0 = Parallel::wait_time();
+#endif
     Constraint_Out(); // this will affect the Dump_List
+#ifdef AMSS_LEVEL_DIAG
+    if (myrank == 0)
+      printf("LEVEL_DIAG constraint step=%d wall=%.6f tfer_n=%ld wait=%.6f\n",
+             ncount, MPI_Wtime() - t_constraint0,
+             Parallel::tfer_n() - n_constraint0,
+             Parallel::wait_time() - wait_constraint0);
+#endif
 
     LastDump += dT_mon;
     Last2dDump += dT_mon;
@@ -1706,6 +1718,13 @@ void bssn_class::Evolve(int Steps)
 void bssn_class::RecursiveStep(int lev)
 {
   double dT_lev = dT * pow(0.5, Mymax(lev, trfls));
+#ifdef AMSS_LEVEL_DIAG
+  double t_recursive0 = MPI_Wtime();
+  double t_step0 = 0.0, t_child0 = 0.0, t_rp0 = 0.0, t_regrid0 = 0.0;
+  double step_wall = 0.0, child_wall = 0.0, rp_wall = 0.0, regrid_wall = 0.0;
+  long rp_n = 0;
+  double rp_wait = 0.0;
+#endif
 
   int NoIterations = 1, YN;
   if (lev <= trfls)
@@ -1717,23 +1736,55 @@ void bssn_class::RecursiveStep(int lev)
   {
     //     if(myrank==0) cout<<"level now = "<<lev<<" NoIteration = "<<i<<endl;
     YN = (i == NoIterations - 1) ? 1 : 0; // 1: same time level for coarse level and fine level
+#ifdef AMSS_LEVEL_DIAG
+    t_step0 = MPI_Wtime();
+#endif
     Step(lev, YN);
+#ifdef AMSS_LEVEL_DIAG
+    step_wall += MPI_Wtime() - t_step0;
+#endif
 
     GH->Lt[lev] += dT_lev;
 
     if (lev < GH->levels - 1)
     {
       int lf = lev + 1;
+#ifdef AMSS_LEVEL_DIAG
+      t_child0 = MPI_Wtime();
+#endif
       RecursiveStep(lf);
+#ifdef AMSS_LEVEL_DIAG
+      child_wall += MPI_Wtime() - t_child0;
+#endif
     }
     else
       PhysTime += dT * pow(0.5, lev);
+
+#ifdef AMSS_ASYNC_LEVEL_SYNC
+    // The child level used independent data while this level's final Sync was
+    // in flight.  Complete the parent's exchange before any coarse/fine data
+    // transfer or before returning to the parent caller.
+    Parallel::finish_async_sync(GH->PatL[lev]);
+#endif
 
     // mesh refinement boundary part
     //
     // till here the PhysTime has updated dT_lev
     //  if(myrank==0) cout<<"level now = "<<lev<<", "<<fgt(PhysTime-dT_lev,StartTime,dT_lev/2)<<endl;
+#ifdef AMSS_LEVEL_DIAG
+    if (lev > 0)
+    {
+      t_rp0 = MPI_Wtime();
+      long rp_n0 = Parallel::tfer_n();
+      double rp_wait0 = Parallel::wait_time();
+      RestrictProlong(lev, YN, fgt(PhysTime - dT_lev, StartTime, dT_lev / 2), StateList, OldStateList, SynchList_cor);
+      rp_wall += MPI_Wtime() - t_rp0;
+      rp_n += Parallel::tfer_n() - rp_n0;
+      rp_wait += Parallel::wait_time() - rp_wait0;
+    }
+#else
     RestrictProlong(lev, YN, fgt(PhysTime - dT_lev, StartTime, dT_lev / 2), StateList, OldStateList, SynchList_cor);
+#endif
     // RestrictProlong(lev,YN,false,StateList,OldStateList,SynchList_cor);
 
 
@@ -1741,9 +1792,19 @@ void bssn_class::RecursiveStep(int lev)
   }
 
 
+#ifdef AMSS_LEVEL_DIAG
+  t_regrid0 = MPI_Wtime();
+#endif
   GH->Regrid_Onelevel(lev, Symmetry, BH_num, Porgbr, Porg0,
                       SynchList_cor, OldStateList, StateList, SynchList_pre,
                       fgt(PhysTime - dT_lev, StartTime, dT_lev / 2), ErrorMonitor);
+#ifdef AMSS_LEVEL_DIAG
+  regrid_wall = MPI_Wtime() - t_regrid0;
+  if (myrank == 0)
+    printf("LEVEL_DIAG lev=%d step=%.6f child=%.6f rp=%.6f regrid=%.6f total=%.6f rp_tfer_n=%ld rp_wait=%.6f\n",
+           lev, step_wall, child_wall, rp_wall, regrid_wall,
+           MPI_Wtime() - t_recursive0, rp_n, rp_wait);
+#endif
 }
 
 //================================================================================================
@@ -1773,6 +1834,7 @@ void bssn_class::RecursiveStep(int lev)
 void bssn_class::Step(int lev, int YN)
 {
   static double last_wait = 0.0; static long last_n = 0; static double last_ana = 0.0;
+  static double last_pack = 0.0; static double last_wtime = 0.0; static double last_unpack = 0.0;
   double t_step0 = MPI_Wtime();
   setpbh(BH_num, Porg0, Mass, BH_num_input);
 
@@ -1826,9 +1888,19 @@ void bssn_class::Step(int lev, int YN)
   double TRK4 = PhysTime;
   int iter_count = 0; // count RK4 substeps
   int pre = 0, cor = 1;
+#ifdef AMSS_FINE_PREDICTOR_EVOLVE
+  // Fine-level constraint fields are recomputed by Constraint_Out after the
+  // recursive step.  Keep the level-0 predictor in constraint mode because
+  // its fields are reused for the outer-step constraint output; fine-level
+  // predictors can use the cheaper POINTWISE evolution path instead.
+  int predictor_co = (lev > 0) ? cor : pre;
+#else
+  int predictor_co = pre;
+#endif
   int ERROR = 0;
 
   // Predictor
+  int my_block_count = 0;
   MyList<Patch> *Pp = GH->PatL[lev];
   while (Pp)
   {
@@ -1838,6 +1910,7 @@ void bssn_class::Step(int lev, int YN)
       Block *cg = BP->data;
       if (myrank == cg->rank)
       {
+        my_block_count++;
         f_enforce_ga(cg->shape,
                      cg->fgfs[gxx0->sgfn], cg->fgfs[gxy0->sgfn], cg->fgfs[gxz0->sgfn], 
                      cg->fgfs[gyy0->sgfn], cg->fgfs[gyz0->sgfn], cg->fgfs[gzz0->sgfn],
@@ -1877,7 +1950,7 @@ void bssn_class::Step(int lev, int YN)
                                cg->fgfs[Cons_Ham->sgfn],
                                cg->fgfs[Cons_Px->sgfn], cg->fgfs[Cons_Py->sgfn], cg->fgfs[Cons_Pz->sgfn],
                                cg->fgfs[Cons_Gx->sgfn], cg->fgfs[Cons_Gy->sgfn], cg->fgfs[Cons_Gz->sgfn],
-                               Symmetry, lev, ndeps, pre))
+                               Symmetry, lev, ndeps, predictor_co))
         {
           cout << "find NaN in domain: (" 
                << cg->bbox[0] << ":" << cg->bbox[3] << "," 
@@ -2076,7 +2149,12 @@ void bssn_class::Step(int lev, int YN)
     }
 
 
+#ifdef AMSS_ASYNC_LEVEL_SYNC
+    if (iter_count < 3)
+      Parallel::Sync(GH->PatL[lev], SynchList_cor, Symmetry);
+#else
     Parallel::Sync(GH->PatL[lev], SynchList_cor, Symmetry);
+#endif
 
     // swap time level
     if (iter_count < 3)
@@ -2130,14 +2208,39 @@ void bssn_class::Step(int lev, int YN)
     }
   }
 
-  // diagnostic: per-step time breakdown (transfer wait vs compute)
-  if (myrank == 0) {
-    double dw = Parallel::tfer_wait() - last_wait;
-    long dn = Parallel::tfer_n() - last_n;
-    double da = g_ana_total - last_ana;
-    printf("STEP lev=%d YN=%d wall=%.4f tfer=%.4f n=%ld avg=%.6f ana=%.4f\n",
-           lev, YN, MPI_Wtime() - t_step0, dw, dn, dn > 0 ? dw / dn : 0.0, da);
-    last_wait = Parallel::tfer_wait(); last_n = Parallel::tfer_n(); last_ana = g_ana_total;
+#ifdef AMSS_ASYNC_LEVEL_SYNC
+  // The final state is now in StateList.  Post its ghost/buffer exchange and
+  // let the recursive child level compute while the requests are in flight.
+  // RecursiveStep finishes this handle before RestrictProlong or return.
+  Parallel::begin_async_sync(GH->PatL[lev], StateList, Symmetry, 1000 + lev);
+#endif
+
+  // diagnostic: per-step time breakdown + per-rank load imbalance
+  {
+    double my_wall = MPI_Wtime() - t_step0;
+    double wall_min, wall_max, wall_sum;
+    MPI_Reduce(&my_wall, &wall_min, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&my_wall, &wall_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&my_wall, &wall_sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    int bc_min, bc_max, bc_sum;
+    MPI_Reduce(&my_block_count, &bc_min, 1, MPI_INT, MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&my_block_count, &bc_max, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&my_block_count, &bc_sum, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (myrank == 0) {
+      double dw = Parallel::tfer_wait() - last_wait;
+      long dn = Parallel::tfer_n() - last_n;
+      double da = g_ana_total - last_ana;
+      double dp = Parallel::pack_time() - last_pack;
+      double dwt = Parallel::wait_time() - last_wtime;
+      double du = Parallel::unpack_time() - last_unpack;
+      printf("STEP lev=%d YN=%d wall=%.4f tfer=%.4f n=%ld avg=%.6f ana=%.4f pack=%.4f wait=%.4f unpk=%.4f imbal min=%.4f max=%.4f sum=%.4f blk min=%d max=%d sum=%d\n",
+             lev, YN, my_wall, dw, dn, dn > 0 ? dw / dn : 0.0, da, dp, dwt, du, wall_min, wall_max, wall_sum, bc_min, bc_max, bc_sum);
+      last_wait = Parallel::tfer_wait(); last_n = Parallel::tfer_n(); last_ana = g_ana_total;
+      last_pack = Parallel::pack_time(); last_wtime = Parallel::wait_time(); last_unpack = Parallel::unpack_time();
+    } else {
+      last_wait = Parallel::tfer_wait(); last_n = Parallel::tfer_n(); last_ana = g_ana_total;
+      last_pack = Parallel::pack_time(); last_wtime = Parallel::wait_time(); last_unpack = Parallel::unpack_time();
+    }
   }
 }
 
@@ -2365,6 +2468,10 @@ void bssn_class::RestrictProlong(int lev, int YN, bool BB)
 
       Parallel::Sync(GH->PatL[lev - 1], SynchList_pre, Symmetry);
 
+#ifdef AMSS_BATCH_OUTBD
+      Parallel::OutBdLow2Hi(GH->PatL[lev - 1], GH->PatL[lev],
+                            SynchList_pre, SynchList_cor, Symmetry);
+#else
       Ppc = GH->PatL[lev - 1];
       while (Ppc)
       {
@@ -2376,6 +2483,7 @@ void bssn_class::RestrictProlong(int lev, int YN, bool BB)
         }
         Ppc = Ppc->next;
       }
+#endif
     }
     else // no time refinement levels and for all same time levels
     {
@@ -2385,6 +2493,12 @@ void bssn_class::RestrictProlong(int lev, int YN, bool BB)
 
       Parallel::Sync(GH->PatL[lev - 1], StateList, Symmetry);
 
+#ifdef AMSS_BATCH_OUTBD
+      // The list overload builds one communication plan for all coarse/fine
+      // patches.  The legacy path below rebuilt and waited once per patch pair.
+      Parallel::OutBdLow2Hi(GH->PatL[lev - 1], GH->PatL[lev],
+                            StateList, SynchList_cor, Symmetry);
+#else
       Ppc = GH->PatL[lev - 1];
       while (Ppc)
       {
@@ -2396,6 +2510,7 @@ void bssn_class::RestrictProlong(int lev, int YN, bool BB)
         }
         Ppc = Ppc->next;
       }
+#endif
     }
 
     Parallel::Sync(GH->PatL[lev], SynchList_cor, Symmetry);
@@ -2427,6 +2542,10 @@ void bssn_class::ProlongRestrict(int lev, int YN, bool BB)
         Pp = Pp->next;
       }
 
+#ifdef AMSS_BATCH_OUTBD
+      Parallel::OutBdLow2Hi(GH->PatL[lev - 1], GH->PatL[lev],
+                            SynchList_pre, SynchList_cor, Symmetry);
+#else
       Ppc = GH->PatL[lev - 1];
       while (Ppc)
       {
@@ -2438,9 +2557,14 @@ void bssn_class::ProlongRestrict(int lev, int YN, bool BB)
         }
         Ppc = Ppc->next;
       }
+#endif
     }
     else // no time refinement levels and for all same time levels
     {
+#ifdef AMSS_BATCH_OUTBD
+      Parallel::OutBdLow2Hi(GH->PatL[lev - 1], GH->PatL[lev],
+                            StateList, SynchList_cor, Symmetry);
+#else
       Ppc = GH->PatL[lev - 1];
       while (Ppc)
       {
@@ -2452,6 +2576,7 @@ void bssn_class::ProlongRestrict(int lev, int YN, bool BB)
         }
         Ppc = Ppc->next;
       }
+#endif
 
       Parallel::Restrict_after(GH->PatL[lev - 1], GH->PatL[lev], SynchList_cor, StateList, Symmetry);
 

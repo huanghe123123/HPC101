@@ -1,0 +1,56 @@
+! Point-local second derivative stencil.  The caller defines:
+!   PW_FIELD, PW_S1/PW_S2/PW_S3,
+!   PW_FXX/PW_FXY/PW_FXZ/PW_FYY/PW_FYZ/PW_FZZ,
+!   and PW_VALUE(ii,jj,kk), which is supplied by the caller.
+
+PW_FXX = 0.d0
+PW_FXY = 0.d0
+PW_FXZ = 0.d0
+PW_FYY = 0.d0
+PW_FYZ = 0.d0
+PW_FZZ = 0.d0
+if (pw_order == 4) then
+  PW_FXX = pw_fxxc*(-PW_VALUE(i-2,j,k)+16.d0*PW_VALUE(i-1,j,k)- &
+                    30.d0*PW_VALUE(i,j,k)+16.d0*PW_VALUE(i+1,j,k)- &
+                    PW_VALUE(i+2,j,k))
+  PW_FYY = pw_fyyc*(-PW_VALUE(i,j-2,k)+16.d0*PW_VALUE(i,j-1,k)- &
+                    30.d0*PW_VALUE(i,j,k)+16.d0*PW_VALUE(i,j+1,k)- &
+                    PW_VALUE(i,j+2,k))
+  PW_FZZ = pw_fzzc*(-PW_VALUE(i,j,k-2)+16.d0*PW_VALUE(i,j,k-1)- &
+                    30.d0*PW_VALUE(i,j,k)+16.d0*PW_VALUE(i,j,k+1)- &
+                    PW_VALUE(i,j,k+2))
+  PW_FXY = pw_fxyc*((PW_VALUE(i-2,j-2,k)-8.d0*PW_VALUE(i-1,j-2,k)+ &
+                     8.d0*PW_VALUE(i+1,j-2,k)-PW_VALUE(i+2,j-2,k))- &
+                    8.d0*(PW_VALUE(i-2,j-1,k)-8.d0*PW_VALUE(i-1,j-1,k)+ &
+                     8.d0*PW_VALUE(i+1,j-1,k)-PW_VALUE(i+2,j-1,k))+ &
+                    8.d0*(PW_VALUE(i-2,j+1,k)-8.d0*PW_VALUE(i-1,j+1,k)+ &
+                     8.d0*PW_VALUE(i+1,j+1,k)-PW_VALUE(i+2,j+1,k))- &
+                    (PW_VALUE(i-2,j+2,k)-8.d0*PW_VALUE(i-1,j+2,k)+ &
+                     8.d0*PW_VALUE(i+1,j+2,k)-PW_VALUE(i+2,j+2,k)))
+  PW_FXZ = pw_fxzc*((PW_VALUE(i-2,j,k-2)-8.d0*PW_VALUE(i-1,j,k-2)+ &
+                     8.d0*PW_VALUE(i+1,j,k-2)-PW_VALUE(i+2,j,k-2))- &
+                    8.d0*(PW_VALUE(i-2,j,k-1)-8.d0*PW_VALUE(i-1,j,k-1)+ &
+                     8.d0*PW_VALUE(i+1,j,k-1)-PW_VALUE(i+2,j,k-1))+ &
+                    8.d0*(PW_VALUE(i-2,j,k+1)-8.d0*PW_VALUE(i-1,j,k+1)+ &
+                     8.d0*PW_VALUE(i+1,j,k+1)-PW_VALUE(i+2,j,k+1))- &
+                    (PW_VALUE(i-2,j,k+2)-8.d0*PW_VALUE(i-1,j,k+2)+ &
+                     8.d0*PW_VALUE(i+1,j,k+2)-PW_VALUE(i+2,j,k+2)))
+  PW_FYZ = pw_fyzc*((PW_VALUE(i,j-2,k-2)-8.d0*PW_VALUE(i,j-1,k-2)+ &
+                     8.d0*PW_VALUE(i,j+1,k-2)-PW_VALUE(i,j+2,k-2))- &
+                    8.d0*(PW_VALUE(i,j-2,k-1)-8.d0*PW_VALUE(i,j-1,k-1)+ &
+                     8.d0*PW_VALUE(i,j+1,k-1)-PW_VALUE(i,j+2,k-1))+ &
+                    8.d0*(PW_VALUE(i,j-2,k+1)-8.d0*PW_VALUE(i,j-1,k+1)+ &
+                     8.d0*PW_VALUE(i,j+1,k+1)-PW_VALUE(i,j+2,k+1))- &
+                    (PW_VALUE(i,j-2,k+2)-8.d0*PW_VALUE(i,j-1,k+2)+ &
+                     8.d0*PW_VALUE(i,j+1,k+2)-PW_VALUE(i,j+2,k+2)))
+else if (pw_order == 2) then
+  PW_FXX = pw_sxx*(PW_VALUE(i-1,j,k)-2.d0*PW_VALUE(i,j,k)+PW_VALUE(i+1,j,k))
+  PW_FYY = pw_syy*(PW_VALUE(i,j-1,k)-2.d0*PW_VALUE(i,j,k)+PW_VALUE(i,j+1,k))
+  PW_FZZ = pw_szz*(PW_VALUE(i,j,k-1)-2.d0*PW_VALUE(i,j,k)+PW_VALUE(i,j,k+1))
+  PW_FXY = 0.25d0/(dX*dY)*(PW_VALUE(i-1,j-1,k)-PW_VALUE(i+1,j-1,k)- &
+                            PW_VALUE(i-1,j+1,k)+PW_VALUE(i+1,j+1,k))
+  PW_FXZ = 0.25d0/(dX*dZ)*(PW_VALUE(i-1,j,k-1)-PW_VALUE(i+1,j,k-1)- &
+                            PW_VALUE(i-1,j,k+1)+PW_VALUE(i+1,j,k+1))
+  PW_FYZ = 0.25d0/(dY*dZ)*(PW_VALUE(i,j-1,k-1)-PW_VALUE(i,j+1,k-1)- &
+                            PW_VALUE(i,j-1,k+1)+PW_VALUE(i,j+1,k+1))
+end if

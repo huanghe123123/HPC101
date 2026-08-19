@@ -1,0 +1,121 @@
+  do k=klo,khi
+  do j=1,ex(2)-1
+  do i=1,ex(1)-1
+#if 0  
+!~~~~~~ fxx
+        if(i+2 <= imax .and. i-2 >= imin)then
+!
+!               - f(i-2) + 16 f(i-1) - 30 f(i) + 16 f(i+1) - f(i+2)
+!  fxx(i) = ----------------------------------------------------------
+!                                  12 dx^2 
+   fxx(i,j,k) = Fdxdx*(-FVAL(i-2,j,k)+F16*FVAL(i-1,j,k)-F30*FVAL(i,j,k) &
+                       -FVAL(i+2,j,k)+F16*FVAL(i+1,j,k)              )
+   elseif(i+1 <= imax .and. i-1 >= imin)then
+!
+!               f(i-1) - 2 f(i) + f(i+1)
+!  fxx(i) = --------------------------------
+!                         dx^2 
+   fxx(i,j,k) = Sdxdx*(FVAL(i-1,j,k)-TWO*FVAL(i,j,k) &
+                      +FVAL(i+1,j,k)              )
+   endif
+
+
+!~~~~~~ fyy
+        if(j+2 <= jmax .and. j-2 >= jmin)then
+
+   fyy(i,j,k) = Fdydy*(-FVAL(i,j-2,k)+F16*FVAL(i,j-1,k)-F30*FVAL(i,j,k) &
+                       -FVAL(i,j+2,k)+F16*FVAL(i,j+1,k)              )
+   elseif(j+1 <= jmax .and. j-1 >= jmin)then
+
+   fyy(i,j,k) = Sdydy*(FVAL(i,j-1,k)-TWO*FVAL(i,j,k) &
+                      +FVAL(i,j+1,k)              )
+   endif
+
+!~~~~~~ fzz
+        if(k+2 <= kmax .and. k-2 >= kmin)then
+
+   fzz(i,j,k) = Fdzdz*(-FVAL(i,j,k-2)+F16*FVAL(i,j,k-1)-F30*FVAL(i,j,k) &
+                       -FVAL(i,j,k+2)+F16*FVAL(i,j,k+1)              )
+   elseif(k+1 <= kmax .and. k-1 >= kmin)then
+
+   fzz(i,j,k) = Sdzdz*(FVAL(i,j,k-1)-TWO*FVAL(i,j,k) &
+                      +FVAL(i,j,k+1)              )
+   endif
+!~~~~~~ fxy
+       if(i+2 <= imax .and. i-2 >= imin .and. j+2 <= jmax .and. j-2 >= jmin)then
+!
+!                 ( f(i-2,j-2) - 8 f(i-1,j-2) + 8 f(i+1,j-2) - f(i+2,j-2) )
+!             - 8 ( f(i-2,j-1) - 8 f(i-1,j-1) + 8 f(i+1,j-1) - f(i+2,j-1) )
+!             + 8 ( f(i-2,j+1) - 8 f(i-1,j+1) + 8 f(i+1,j+1) - f(i+2,j+1) )
+!             -   ( f(i-2,j+2) - 8 f(i-1,j+2) + 8 f(i+1,j+2) - f(i+2,j+2) )
+!  fxy(i,j) = ----------------------------------------------------------------
+!                                  144 dx dy
+   fxy(i,j,k) = Fdxdy*(     (FVAL(i-2,j-2,k)-F8*FVAL(i-1,j-2,k)+F8*FVAL(i+1,j-2,k)-FVAL(i+2,j-2,k))  &
+                       -F8 *(FVAL(i-2,j-1,k)-F8*FVAL(i-1,j-1,k)+F8*FVAL(i+1,j-1,k)-FVAL(i+2,j-1,k))  &
+                       +F8 *(FVAL(i-2,j+1,k)-F8*FVAL(i-1,j+1,k)+F8*FVAL(i+1,j+1,k)-FVAL(i+2,j+1,k))  &
+                       -    (FVAL(i-2,j+2,k)-F8*FVAL(i-1,j+2,k)+F8*FVAL(i+1,j+2,k)-FVAL(i+2,j+2,k)))
+
+   elseif(i+1 <= imax .and. i-1 >= imin .and. j+1 <= jmax .and. j-1 >= jmin)then
+!                 f(i-1,j-1) - f(i+1,j-1) - f(i-1,j+1) + f(i+1,j+1) 
+!  fxy(i,j) = -----------------------------------------------------------
+!                                      4 dx dy
+   fxy(i,j,k) = Sdxdy*(FVAL(i-1,j-1,k)-FVAL(i+1,j-1,k)-FVAL(i-1,j+1,k)+FVAL(i+1,j+1,k))
+   endif
+!~~~~~~ fxz
+       if(i+2 <= imax .and. i-2 >= imin .and. k+2 <= kmax .and. k-2 >= kmin)then
+   fxz(i,j,k) = Fdxdz*(     (FVAL(i-2,j,k-2)-F8*FVAL(i-1,j,k-2)+F8*FVAL(i+1,j,k-2)-FVAL(i+2,j,k-2))  &
+                       -F8 *(FVAL(i-2,j,k-1)-F8*FVAL(i-1,j,k-1)+F8*FVAL(i+1,j,k-1)-FVAL(i+2,j,k-1))  &
+                       +F8 *(FVAL(i-2,j,k+1)-F8*FVAL(i-1,j,k+1)+F8*FVAL(i+1,j,k+1)-FVAL(i+2,j,k+1))  &
+                       -    (FVAL(i-2,j,k+2)-F8*FVAL(i-1,j,k+2)+F8*FVAL(i+1,j,k+2)-FVAL(i+2,j,k+2)))
+   elseif(i+1 <= imax .and. i-1 >= imin .and. k+1 <= kmax .and. k-1 >= kmin)then
+   fxz(i,j,k) = Sdxdz*(FVAL(i-1,j,k-1)-FVAL(i+1,j,k-1)-FVAL(i-1,j,k+1)+FVAL(i+1,j,k+1))
+   endif
+!~~~~~~ fyz
+       if(j+2 <= jmax .and. j-2 >= jmin .and. k+2 <= kmax .and. k-2 >= kmin)then
+   fyz(i,j,k) = Fdydz*(     (FVAL(i,j-2,k-2)-F8*FVAL(i,j-1,k-2)+F8*FVAL(i,j+1,k-2)-FVAL(i,j+2,k-2))  &
+                       -F8 *(FVAL(i,j-2,k-1)-F8*FVAL(i,j-1,k-1)+F8*FVAL(i,j+1,k-1)-FVAL(i,j+2,k-1))  &
+                       +F8 *(FVAL(i,j-2,k+1)-F8*FVAL(i,j-1,k+1)+F8*FVAL(i,j+1,k+1)-FVAL(i,j+2,k+1))  &
+                       -    (FVAL(i,j-2,k+2)-F8*FVAL(i,j-1,k+2)+F8*FVAL(i,j+1,k+2)-FVAL(i,j+2,k+2)))
+   elseif(j+1 <= jmax .and. j-1 >= jmin .and. k+1 <= kmax .and. k-1 >= kmin)then
+   fyz(i,j,k) = Sdydz*(FVAL(i,j-1,k-1)-FVAL(i,j+1,k-1)-FVAL(i,j-1,k+1)+FVAL(i,j+1,k+1))
+   endif 
+#else
+! for bam comparison
+   if(i+2 <= imax .and. i-2 >= imin .and. &
+      j+2 <= jmax .and. j-2 >= jmin .and. &
+      k+2 <= kmax .and. k-2 >= kmin) then
+   fxx(i,j,k) = Fdxdx*(-FVAL(i-2,j,k)+F16*FVAL(i-1,j,k)-F30*FVAL(i,j,k) &
+                       -FVAL(i+2,j,k)+F16*FVAL(i+1,j,k)              )
+   fyy(i,j,k) = Fdydy*(-FVAL(i,j-2,k)+F16*FVAL(i,j-1,k)-F30*FVAL(i,j,k) &
+                       -FVAL(i,j+2,k)+F16*FVAL(i,j+1,k)              )
+   fzz(i,j,k) = Fdzdz*(-FVAL(i,j,k-2)+F16*FVAL(i,j,k-1)-F30*FVAL(i,j,k) &
+                       -FVAL(i,j,k+2)+F16*FVAL(i,j,k+1)              )
+   fxy(i,j,k) = Fdxdy*(     (FVAL(i-2,j-2,k)-F8*FVAL(i-1,j-2,k)+F8*FVAL(i+1,j-2,k)-FVAL(i+2,j-2,k))  &
+                       -F8 *(FVAL(i-2,j-1,k)-F8*FVAL(i-1,j-1,k)+F8*FVAL(i+1,j-1,k)-FVAL(i+2,j-1,k))  &
+                       +F8 *(FVAL(i-2,j+1,k)-F8*FVAL(i-1,j+1,k)+F8*FVAL(i+1,j+1,k)-FVAL(i+2,j+1,k))  &
+                       -    (FVAL(i-2,j+2,k)-F8*FVAL(i-1,j+2,k)+F8*FVAL(i+1,j+2,k)-FVAL(i+2,j+2,k)))
+   fxz(i,j,k) = Fdxdz*(     (FVAL(i-2,j,k-2)-F8*FVAL(i-1,j,k-2)+F8*FVAL(i+1,j,k-2)-FVAL(i+2,j,k-2))  &
+                       -F8 *(FVAL(i-2,j,k-1)-F8*FVAL(i-1,j,k-1)+F8*FVAL(i+1,j,k-1)-FVAL(i+2,j,k-1))  &
+                       +F8 *(FVAL(i-2,j,k+1)-F8*FVAL(i-1,j,k+1)+F8*FVAL(i+1,j,k+1)-FVAL(i+2,j,k+1))  &
+                       -    (FVAL(i-2,j,k+2)-F8*FVAL(i-1,j,k+2)+F8*FVAL(i+1,j,k+2)-FVAL(i+2,j,k+2)))
+   fyz(i,j,k) = Fdydz*(     (FVAL(i,j-2,k-2)-F8*FVAL(i,j-1,k-2)+F8*FVAL(i,j+1,k-2)-FVAL(i,j+2,k-2))  &
+                       -F8 *(FVAL(i,j-2,k-1)-F8*FVAL(i,j-1,k-1)+F8*FVAL(i,j+1,k-1)-FVAL(i,j+2,k-1))  &
+                       +F8 *(FVAL(i,j-2,k+1)-F8*FVAL(i,j-1,k+1)+F8*FVAL(i,j+1,k+1)-FVAL(i,j+2,k+1))  &
+                       -    (FVAL(i,j-2,k+2)-F8*FVAL(i,j-1,k+2)+F8*FVAL(i,j+1,k+2)-FVAL(i,j+2,k+2)))
+   elseif(i+1 <= imax .and. i-1 >= imin .and. &
+          j+1 <= jmax .and. j-1 >= jmin .and. &
+          k+1 <= kmax .and. k-1 >= kmin) then
+   fxx(i,j,k) = Sdxdx*(FVAL(i-1,j,k)-TWO*FVAL(i,j,k) &
+                      +FVAL(i+1,j,k)              )
+   fyy(i,j,k) = Sdydy*(FVAL(i,j-1,k)-TWO*FVAL(i,j,k) &
+                      +FVAL(i,j+1,k)              )
+   fzz(i,j,k) = Sdzdz*(FVAL(i,j,k-1)-TWO*FVAL(i,j,k) &
+                      +FVAL(i,j,k+1)              )
+   fxy(i,j,k) = Sdxdy*(FVAL(i-1,j-1,k)-FVAL(i+1,j-1,k)-FVAL(i-1,j+1,k)+FVAL(i+1,j+1,k))
+   fxz(i,j,k) = Sdxdz*(FVAL(i-1,j,k-1)-FVAL(i+1,j,k-1)-FVAL(i-1,j,k+1)+FVAL(i+1,j,k+1))
+   fyz(i,j,k) = Sdydz*(FVAL(i,j-1,k-1)-FVAL(i,j+1,k-1)-FVAL(i,j-1,k+1)+FVAL(i,j+1,k+1))
+   endif
+#endif
+   enddo
+   enddo
+   enddo

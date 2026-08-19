@@ -24,7 +24,7 @@
   - **可行**:MPI=1 + `-m 64`(job 104167 成功,81638 样本)
 - **计算节点 perf report 无法解析符号**(刷屏 `unwind: get_proc_name unsupported`)→ 原始 perf4.data 要回 devpod 重解析:`perf report -i perf4.data --stdio ... | grep -vE "unwind|get_proc_name"` 落盘干净版。
 - **devpod**:perf record 可用,但 30 rank 4 步要 >40min(共享机太慢)。
-- **多 rank record 尚未做**(30 rank 缓冲超限;4/8 rank 折中方案待用)。
+- **多 rank record 已可行**：30 rank 使用 `-m 4` 已成功（见 perf 采样 #4/#5）；更大的 mmap 缓冲仍会超过 516KB 的全局 mlock 预算。
 
 ## 记录模板
 
@@ -87,4 +87,77 @@
 
 ---
 
+---
+
+## DevPod 调试 #2: OpenMP 并行正确性验证  (2026-08-17)
+- 优化内容: 热点 Fortran stencil 循环加 `!$omp parallel do`(diff_new.f90 11 处 + kodiss 1 处 + lopsidediff 1 处,commit 1b9c77d);`AMSS_ENABLE_OPENMP=ON` 编译
+- 编译: 成功(devpod,g++/gfortran + OpenMP)
+- 运行: MPI=9 4 步,OMP=1 → 527.2s(单步 131.8s);OMP=4 → 926.5s(单步 231.6s,**devpod 上并行反而慢 75%**——共享机噪声 + 可能并行开销,集群为准)
+- 正确性(check.sh): **OMP=1 和 OMP=4 都 FINAL: PASS,约束值逐位相同**(Ham=0.22588831, Px=0.02448088, Py=0.0091883125, Pz=0.014353656)→ 并行不改变数值结果 ✓
+- 备注: Input.py 已恢复(MPI=30, OMP=1)。集群 OMP 组合实验: job 107588(30:1 / 15:2 / 10:3 / 6:5)
+
+---
+
+## DevPod 调试 #1: rank_sweep.sh 脚本验证(MPI=9)  (2026-08-17)
+- 优化内容: 验证 rank 扫描脚本 `rank_sweep.sh`(备份/恢复 Input.py、4 步 + twop-cache、提取演化时间)——对应集群优化 #1(MPI rank 数探索)
+- 编译: 成功(devpod 256 核 4 NUMA,compile.sh 全项目)
+- 运行: MPI=9 跑完 4 步,Total Evolve Time = 541.5s(devpod 共享机,仅验证流程,时间不作数)
+- 正确性: 未单独 check(集群正式计时时统一 check)
+- 备注: **Input.py 通过 trap EXIT 成功恢复为 MPI_processes=30**;脚本可安全用于集群。顺带采集 devpod 拓扑:256 核 4 NUMA,node 0-1 近(10-12)、0↔2/3 远(35-40),mpiexec 默认无绑定
+
 <!-- DevPod 调试 + perf 采样记录追加在此线之下 -->
+
+## DevPod 调试 #3: 忙等根因诊断插桩  (2026-08-17)
+- 优化内容: Parallel::transfer 累计 Waitall 时间 + bssn_class::Step 按步打印 wall/tfer/ana 分解(commit 47989cd + 7d1f777)——对应集群优化 #3(球面插值 OpenMP)的诊断阶段
+- 编译: 成功
+- 运行(集群 job 108473,30 rank 4 步):每粗步 42.8s 里 `STEP lev=0 YN=1 wall=32.9 tfer=0.12 ana=32.89` → **transfer 仅 0.12s,ana(分析)占 32.89s**
+- 根因定位: perf5 按 pid 分析,30 rank CPU 时间"均衡"(3.32-3.33%)是假象——29 个等待 rank 在 opal_progress 忙等轮询烧 CPU,掩盖了同步点到达时间差。Allreduce 等待即负载不均衡:1 个 rank 串行做球面插值(polint 1.49% 全在 pid 377=rank 4),29 个到同步点干等 ~33s → 这就是 perf5 的 76% opal_progress
+- 量化: 40 步里分析 ≈ 40×32.9 = 1316s,占演化时间 77%,比计算(10.3s/步)大 3 倍
+- 结论: 瓶颈不是 transfer、不是 rank 间计算不均,是分析阶段单 rank 串行插值 + Allreduce 同步。→ 优化 #3(rank 内 OpenMP)先缓解,优化 #4(跨 rank 分散)根治
+
+---
+
+## DevPod 调试 #4: 分布式分散正确性验证  (2026-08-17)
+- 优化内容: Interp_Points CPU 路径(NN≥256)改为广播中心块数据 + 按 rank 切片插值(对应集群优化 #4)
+- 编译: 成功(devpod,g++/gfortran)
+- 运行: MPI=30 OMP=1 4 步 + twop-cache,Total Evolve Time = 449.3s(单步 ~13.9s,devpod 共享机,时间不作数)
+- STEP ana 分解: `wall=14.0 tfer=2.7 ana=13.7`(devpod 共享核争抢,ana 未到理论 ~1s;集群独占核后 ana 1.4s,见优化 #4)
+- 正确性(check.sh): **FINAL: PASS**,约束值 Ham=0.22588831/Px=0.02448088/Py=0.0091883125/Pz=0.014353656 与 30:4(#3)逐位完全一致 → 切片+SUM 还原等价于原单 rank 全算 ✓
+- 踩坑: 首版用"找含原点块"匹配球壳,但 PatList_Interp_Points(单点 BH 探针,NN=1)也走该路径,点不在原点 → abort。修复:加 `NN≥256` 门控,小查询走原路径;"找含原点"改"找含第一个插值点的块"
+
+---
+
+## perf 采样 #5: 分布式分散后热点复查  (2026-08-17)
+- 目标: 验证分散后忙等是否消失、定位新热点
+- 采样位置: 计算节点(job 110600, profile5.sh)
+- 参数: MPI=30, OMP=1, 4步+cache, `perf record -F 99 -m 4 --call-graph dwarf`(分布式分散代码,Input 临时 4.0)
+- 产出: perf_profiles/perf6_m4.data (1.2G, 从 perf5_m4 重命名避免覆盖 baseline)、perf6_m4.log、perf6_symbols.txt、perf6_addr.txt、perf6_dso.txt(后三者回 devpod 重解析,`grep -vE 'unwind|get_proc_name'`)
+- 样本: 141K,丢 743
+- **DSO 归类**:
+  | DSO | perf6 分散后 | perf5 baseline |
+  |---|---|---|
+  | ABE | 53.92% | <2% |
+  | libopen-pal | 27.64% | ~76% |
+  | libc | 12.17% | ~3% |
+  | libmpi | 5.13% | ~5% |
+- **函数符号**: compute_rhs_bssn 25.48%、0x00f13c4(未解析,在 libopen-pal)22.96%、polint 5.40%、__memcpy_sve 4.81%、kodis 4.80%、fdderivs 4.57%、lopsided 3.98%、__memset_sve_zva64 3.37%、prolong3 2.34%、opal_progress 0.32%
+- **关键结论**:
+  - ✅ 分散成功:ABE 计算从 <2% 回升到 53.92%,忙等腾出的 CPU 给了有效计算
+  - ⚠️ 忙等没消失,从 ~76% 降到 27.64%。**分析阶段(ana)忙等消失了**(ana 23.9→1.4s),但**计算阶段同步等待仍在**:RecursiveStep 各层 RestrictProlong→transfer 集体同步、RK4 子步间 Sync、新加 16 次 Bcast,30 rank 通信点快等慢仍产生 opal_progress 轮询
+  - 下一瓶颈:计算阶段 AMR 层间通信的集体同步(27.64% libopen-pal),要降需动 transfer/RestrictProlong 通信结构(方向 5)
+- 备注: ⚠️ profile5.sh 输出文件名写死 perf5_m4.*,本次覆盖了 baseline 的 perf5_m4.data 原始数据(baseline 只剩 perf5_symbols.txt/perf5_self.txt 干净版文本)。已重命名为 perf6_*。以后 perf 采样脚本应按次编号输出,避免覆盖
+
+---
+
+## DevPod 调试 #5: POINTWISE 模板阶数提升验证  (2026-08-18)
+- 优化内容: 每个 bulk 点先计算一次 `pw_order`,内联一阶和二阶模板复用这个结果,对应集群优化 #11。
+- 编译: POINTWISE + OpenMP 编译成功。
+- 运行: MPI=30,4 步,`--twop-cache`；输出 `pointwise_runs/pointwise_order2_smoke_20260818_a`。
+- 正确性: **FINAL: PASS**,Trajectory RMS=0,约束值与 golden 逐位一致。
+
+## DevPod 调试 #6: 二阶导点内标量化验证  (2026-08-18)
+- 优化内容: POINTWISE 的 66 个二阶导结果不再写入三维数组,改为点内标量,移位项和 Ricci 相关计算直接消费,对应集群优化 #12。
+- 编译: POINTWISE 和 HALO 均编译成功；LEGACY 预处理也通过。
+- 运行: MPI=30,2 步,`--twop-cache`；输出 `pointwise_runs/pointwise_d2scalar_smoke_20260818_b`。
+- 正确性: **FINAL: PASS**,Trajectory RMS=0；集群 4 步 perf 输出再次检查为 **FINAL: PASS**。
+- 踩坑: 首版漏改移位向量二阶导的公共消费点,出现 NaN；补齐 18 个标量消费后恢复正确。

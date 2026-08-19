@@ -15,6 +15,9 @@ Block::Block(int DIM, int *shapei, double *bboxi, int ranki, int ingfsi, int fng
 {
 	for (int i = 0; i < dim; i++)
 		X[i] = 0;
+#ifdef AMSS_FGFS_COLORED_SLAB
+	fgfs_base = 0;
+#endif
 
 	if (DIM != dim)
 	{
@@ -67,6 +70,25 @@ Block::Block(int DIM, int *shapei, double *bboxi, int ranki, int ingfsi, int fng
 		gpu_valid = new bool[fngfs];
 #endif
 
+		#ifdef AMSS_FGFS_COLORED_SLAB
+		// Keep allocations independent: the legacy code and Fortran runtime
+		// assume each fgfs field has its own ownership.  The 32-line color
+		// rotates equal point offsets through the L1D index bits.
+		const size_t color_lines = 32u;
+		const size_t color_doubles = color_lines * 8u;
+		fgfs_base = new double *[fngfs];
+		for (int i = 0; i < fngfs; i++) {
+			void *raw = 0;
+			if (posix_memalign(&raw, 64, sizeof(double) * (static_cast<size_t>(nn) + color_doubles)) != 0 || !raw)
+			{
+				cout << "on node#" << rank << ", out of memory when constructing colored Block." << endl;
+				MPI_Abort(MPI_COMM_WORLD, 1);
+			}
+			fgfs_base[i] = static_cast<double *>(raw);
+			fgfs[i] = fgfs_base[i] + (static_cast<size_t>(i) % color_lines) * 8u;
+			memset(fgfs[i], 0, sizeof(double) * nn);
+		}
+		#else
 		for (int i = 0; i < fngfs; i++) {
 			fgfs[i] = (double *)malloc(sizeof(double) * nn);
 			if (!(fgfs[i]))
@@ -75,6 +97,7 @@ Block::Block(int DIM, int *shapei, double *bboxi, int ranki, int ingfsi, int fng
 				MPI_Abort(MPI_COMM_WORLD, 1);
 			}
 			memset(fgfs[i], 0, sizeof(double) * nn);
+		#endif
 
 #ifdef USE_GPU
 			d_fgfs[i] = GPUManager::getInstance().allocate_device_memory(nn);
@@ -82,7 +105,9 @@ Block::Block(int DIM, int *shapei, double *bboxi, int ranki, int ingfsi, int fng
 			cpu_valid[i] = true;
 			gpu_valid[i] = false;
 #endif
+		#ifndef AMSS_FGFS_COLORED_SLAB
 		}
+		#endif
 
 		igfs = new int *[ingfs];
 		for (int i = 0; i < ingfs; i++)
@@ -116,12 +141,18 @@ Block::~Block()
 		for (int i = 0; i < ingfs; i++)
 			free(igfs[i]);
 		delete[] igfs;
+		#ifndef AMSS_FGFS_COLORED_SLAB
 		for (int i = 0; i < fngfs; i ++) {
 			free(fgfs[i]);
 #ifdef USE_GPU
 			GPUManager::getInstance().free_device_memory(d_fgfs[i], nn);
 #endif
 		}
+		#else
+		for (int i = 0; i < fngfs; i++)
+			free(fgfs_base[i]);
+		delete[] fgfs_base;
+		#endif
 		delete[] fgfs;
 #ifdef USE_GPU
 		delete[] d_fgfs;
@@ -129,6 +160,9 @@ Block::~Block()
 		delete[] gpu_valid;
 #endif
 		fgfs = 0;
+#ifdef AMSS_FGFS_COLORED_SLAB
+		fgfs_base = 0;
+#endif
 #ifdef USE_GPU
 		d_fgfs = 0;
 #endif
@@ -193,6 +227,9 @@ void Block::swapList(MyList<var> *VarList1, MyList<var> *VarList2, int myrank)
 		while (varl1 && varl2)
 		{
 			misc::swap<double *>(fgfs[varl1->data->sgfn], fgfs[varl2->data->sgfn]);
+#ifdef AMSS_FGFS_COLORED_SLAB
+			misc::swap<double *>(fgfs_base[varl1->data->sgfn], fgfs_base[varl2->data->sgfn]);
+#endif
 #ifdef USE_GPU
 			misc::swap<double *>(d_fgfs[varl1->data->sgfn], d_fgfs[varl2->data->sgfn]);
 			misc::swap<bool>(cpu_valid[varl1->data->sgfn], cpu_valid[varl2->data->sgfn]);

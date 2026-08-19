@@ -5,6 +5,12 @@
 #include "misc.h"
 #include "parameters.h"
 
+#if defined(AMSS_CACHE_COMM_PLANS) || defined(AMSS_ASYNC_LEVEL_SYNC)
+#include <cstdint>
+#include <unordered_map>
+#include <vector>
+#endif
+
 #ifdef USE_GPU
 #include "gpu_manager.h"
 #include "helper.h"
@@ -13,8 +19,273 @@
 // --- diagnostic: cumulative MPI transfer wait time (load-balance analysis) ---
 static double g_tfer_wait = 0.0;
 static long   g_tfer_n    = 0;
+static double g_pack_t    = 0.0;  // data_packer time (serial, not waitable)
+static double g_wait_t    = 0.0;  // MPI_Waitall pure wait
+static double g_unpack_t  = 0.0;  // data_packer unpack time
 double Parallel::tfer_wait() { return g_tfer_wait; }
 long   Parallel::tfer_n()    { return g_tfer_n; }
+double Parallel::pack_time()   { return g_pack_t; }
+double Parallel::wait_time()   { return g_wait_t; }
+double Parallel::unpack_time() { return g_unpack_t; }
+
+#if defined(AMSS_CACHE_COMM_PLANS) || defined(AMSS_ASYNC_LEVEL_SYNC)
+namespace {
+struct PlanKey {
+    const void *a;
+    const void *b;
+    int kind;
+    int symmetry;
+
+    bool operator==(const PlanKey &other) const {
+        return a == other.a && b == other.b && kind == other.kind && symmetry == other.symmetry;
+    }
+};
+
+struct PlanKeyHash {
+    size_t operator()(const PlanKey &key) const {
+        size_t h = reinterpret_cast<uintptr_t>(key.a) >> 4;
+        h ^= (reinterpret_cast<uintptr_t>(key.b) >> 4) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(key.kind) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= static_cast<size_t>(key.symmetry) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+struct CommPlan {
+    int cpusize = 0;
+    MyList<Parallel::gridseg> *dst = nullptr;
+    MyList<Parallel::gridseg> **src = nullptr;
+    MyList<Parallel::gridseg> **transfer_src = nullptr;
+    MyList<Parallel::gridseg> **transfer_dst = nullptr;
+
+    explicit CommPlan(int n) : cpusize(n) {
+        src = new MyList<Parallel::gridseg> *[cpusize]();
+        transfer_src = new MyList<Parallel::gridseg> *[cpusize]();
+        transfer_dst = new MyList<Parallel::gridseg> *[cpusize]();
+    }
+
+    ~CommPlan() {
+        if (dst) dst->destroyList();
+        for (int node = 0; node < cpusize; ++node) {
+            if (src[node]) src[node]->destroyList();
+            if (transfer_src[node]) transfer_src[node]->destroyList();
+            if (transfer_dst[node]) transfer_dst[node]->destroyList();
+        }
+        delete[] src;
+        delete[] transfer_src;
+        delete[] transfer_dst;
+    }
+};
+
+std::unordered_map<PlanKey, CommPlan *, PlanKeyHash> g_comm_plans;
+
+CommPlan *find_plan(const PlanKey &key) {
+    auto it = g_comm_plans.find(key);
+    return it == g_comm_plans.end() ? nullptr : it->second;
+}
+
+void store_plan(const PlanKey &key, CommPlan *plan) {
+    g_comm_plans.emplace(key, plan);
+}
+
+#ifdef AMSS_ASYNC_LEVEL_SYNC
+struct PendingTransfer {
+    CommPlan *plan = nullptr;
+    int cpusize = 0;
+    int req_no = 0;
+    MPI_Request *reqs = nullptr;
+    MPI_Status *stats = nullptr;
+    double **send_data = nullptr;
+    double **rec_data = nullptr;
+    MyList<var> *var_source = nullptr;
+    MyList<var> *var_target = nullptr;
+    int symmetry = 0;
+    int tag = 0;
+
+    ~PendingTransfer() {
+        for (int node = 0; node < cpusize; ++node) {
+            if (send_data && send_data[node]) delete[] send_data[node];
+            if (rec_data && rec_data[node]) delete[] rec_data[node];
+        }
+        delete[] reqs;
+        delete[] stats;
+        delete[] send_data;
+        delete[] rec_data;
+    }
+};
+
+struct PendingSync {
+    std::vector<PendingTransfer *> transfers;
+    ~PendingSync() {
+        for (PendingTransfer *transfer : transfers) delete transfer;
+    }
+};
+
+std::unordered_map<const void *, PendingSync *> g_pending_sync;
+
+void finish_transfer(PendingTransfer *pending);
+
+void drain_pending_sync() {
+    for (auto &entry : g_pending_sync) {
+        PendingSync *pending = entry.second;
+        for (PendingTransfer *transfer_state : pending->transfers)
+            finish_transfer(transfer_state);
+        delete pending;
+    }
+    g_pending_sync.clear();
+}
+
+PendingTransfer *begin_transfer(CommPlan *plan, MyList<var> *var_source,
+                                MyList<var> *var_target, int symmetry, int tag) {
+    auto *pending = new PendingTransfer;
+    pending->plan = plan;
+    pending->cpusize = plan->cpusize;
+    pending->reqs = new MPI_Request[2 * plan->cpusize];
+    pending->stats = new MPI_Status[2 * plan->cpusize];
+    pending->send_data = new double *[plan->cpusize]();
+    pending->rec_data = new double *[plan->cpusize]();
+    pending->var_source = var_source;
+    pending->var_target = var_target;
+    pending->symmetry = symmetry;
+    pending->tag = tag;
+
+    int myrank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+    for (int node = 0; node < plan->cpusize; ++node) {
+        int length = 0;
+        if (node == myrank) {
+            length = data_packer(0, plan->transfer_src[myrank],
+                                 plan->transfer_dst[myrank], node, PACK,
+                                 var_source, var_target, symmetry);
+            if (length) {
+                pending->rec_data[node] = new double[length];
+                data_packer(pending->rec_data[node], plan->transfer_src[myrank],
+                            plan->transfer_dst[myrank], node, PACK,
+                            var_source, var_target, symmetry);
+            }
+        } else {
+            length = data_packer(0, plan->transfer_src[myrank],
+                                 plan->transfer_dst[myrank], node, PACK,
+                                 var_source, var_target, symmetry);
+            if (length) {
+                pending->send_data[node] = new double[length];
+                data_packer(pending->send_data[node], plan->transfer_src[myrank],
+                            plan->transfer_dst[myrank], node, PACK,
+                            var_source, var_target, symmetry);
+                MPI_Isend(pending->send_data[node], length, MPI_DOUBLE, node,
+                          tag, MPI_COMM_WORLD, pending->reqs + pending->req_no++);
+            }
+            length = data_packer(0, plan->transfer_src[node],
+                                 plan->transfer_dst[node], node, UNPACK,
+                                 var_source, var_target, symmetry);
+            if (length) {
+                pending->rec_data[node] = new double[length];
+                MPI_Irecv(pending->rec_data[node], length, MPI_DOUBLE, node,
+                          tag, MPI_COMM_WORLD, pending->reqs + pending->req_no++);
+            }
+        }
+    }
+    return pending;
+}
+
+void finish_transfer(PendingTransfer *pending) {
+    MPI_Waitall(pending->req_no, pending->reqs, pending->stats);
+    int myrank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &myrank);
+    for (int node = 0; node < pending->cpusize; ++node) {
+        if (node == myrank) {
+            if (pending->rec_data[node])
+                data_packer(pending->rec_data[node], pending->plan->transfer_src[node],
+                            pending->plan->transfer_dst[node], node, UNPACK,
+                            pending->var_source, pending->var_target, pending->symmetry);
+        } else if (pending->rec_data[node]) {
+            int length = data_packer(0, pending->plan->transfer_src[node],
+                                     pending->plan->transfer_dst[node], node, UNPACK,
+                                     pending->var_source, pending->var_target, pending->symmetry);
+            data_packer(pending->rec_data[node], pending->plan->transfer_src[node],
+                        pending->plan->transfer_dst[node], node, UNPACK,
+                        pending->var_source, pending->var_target, pending->symmetry);
+            (void)length;
+        }
+    }
+}
+#endif
+}
+#else
+void Parallel::clear_plan_cache() {}
+#endif
+
+#if defined(AMSS_CACHE_COMM_PLANS) || defined(AMSS_ASYNC_LEVEL_SYNC)
+void Parallel::clear_plan_cache() {
+#ifdef AMSS_ASYNC_LEVEL_SYNC
+    // Regrid may invalidate plans while a parent level has requests in flight.
+    // Complete those requests before deleting any plan or Block-backed segment.
+    drain_pending_sync();
+#endif
+    for (auto &entry : g_comm_plans)
+        delete entry.second;
+    g_comm_plans.clear();
+}
+#endif
+
+#ifdef AMSS_ASYNC_LEVEL_SYNC
+void Parallel::begin_async_sync(MyList<Patch> *PatL, MyList<var> *VarList,
+                                int Symmetry, int tag) {
+    int cpusize = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &cpusize);
+    if (g_pending_sync.find(PatL) != g_pending_sync.end()) {
+        cout << "Parallel::begin_async_sync: pending sync already exists" << endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    auto *pending = new PendingSync;
+    for (MyList<Patch> *Pp = PatL; Pp; Pp = Pp->next) {
+        Patch *patch = Pp->data;
+        PlanKey key{patch, nullptr, 1, Symmetry};
+        CommPlan *plan = find_plan(key);
+        if (!plan) {
+            plan = new CommPlan(cpusize);
+            plan->dst = build_ghost_gsl(patch);
+            for (int node = 0; node < cpusize; ++node) {
+                plan->src[node] = build_owned_gsl0(patch, node);
+                build_gstl(plan->src[node], plan->dst,
+                           &plan->transfer_src[node], &plan->transfer_dst[node]);
+            }
+            store_plan(key, plan);
+        }
+        pending->transfers.push_back(begin_transfer(plan, VarList, VarList, Symmetry, tag));
+    }
+
+    PlanKey list_key{PatL, nullptr, 2, Symmetry};
+    CommPlan *list_plan = find_plan(list_key);
+    if (!list_plan) {
+        list_plan = new CommPlan(cpusize);
+        list_plan->dst = build_buffer_gsl(PatL);
+        for (int node = 0; node < cpusize; ++node) {
+            list_plan->src[node] = build_owned_gsl(PatL, node, 5, Symmetry);
+            build_gstl(list_plan->src[node], list_plan->dst,
+                       &list_plan->transfer_src[node], &list_plan->transfer_dst[node]);
+        }
+        store_plan(list_key, list_plan);
+    }
+    pending->transfers.push_back(begin_transfer(list_plan, VarList, VarList, Symmetry, tag));
+    g_pending_sync.emplace(PatL, pending);
+}
+
+void Parallel::finish_async_sync(MyList<Patch> *PatL) {
+    auto it = g_pending_sync.find(PatL);
+    if (it == g_pending_sync.end())
+        return;
+    PendingSync *pending = it->second;
+    for (PendingTransfer *transfer_state : pending->transfers)
+        finish_transfer(transfer_state);
+    delete pending;
+    g_pending_sync.erase(it);
+}
+#else
+void Parallel::begin_async_sync(MyList<Patch> *, MyList<var> *, int, int) {}
+void Parallel::finish_async_sync(MyList<Patch> *) {}
+#endif
 
 int Parallel::partition1(int &nx, int split_size, int min_width, int cpusize, int shape) // special for 1 diemnsion
 {
@@ -184,6 +455,7 @@ MyList<Block> *Parallel::distribute(
     split_size = Mymax(1, split_size);
 
     int n_rank = 0;
+    int patch_idx = 0; // track which patch we're in for interleaved assignment
     PLi = PatchLIST;
     int reacpu = 0;
     while (PLi)
@@ -2537,6 +2809,7 @@ void Parallel::transfer(MyList<Parallel::gridseg> **src, MyList<Parallel::gridse
     rec_data = new double *[cpusize];
     int length;
 
+    double t_pack0 = MPI_Wtime();
     for (node = 0; node < cpusize; node++)
     {
         send_data[node] = rec_data[node] = 0;
@@ -2580,12 +2853,18 @@ void Parallel::transfer(MyList<Parallel::gridseg> **src, MyList<Parallel::gridse
             }
         }
     }
+    g_pack_t += MPI_Wtime() - t_pack0;
+
+    double t_wait0 = MPI_Wtime();
     // wait for all requests to complete
     MPI_Waitall(req_no, reqs, stats);
+    g_wait_t += MPI_Wtime() - t_wait0;
 
+    double t_unpack0 = MPI_Wtime();
     for (node = 0; node < cpusize; node++)
         if (rec_data[node])
             data_packer(rec_data[node], src[node], dst[node], node, UNPACK, VarList1, VarList2, Symmetry);
+    g_unpack_t += MPI_Wtime() - t_unpack0;
 
     for (node = 0; node < cpusize; node++)
     {
@@ -2693,7 +2972,25 @@ void Parallel::Sync(Patch *Pat, MyList<var> *VarList, int Symmetry)
 {
     int cpusize;
     MPI_Comm_size(MPI_COMM_WORLD, &cpusize);
-
+#ifdef AMSS_CACHE_COMM_PLANS
+    PlanKey key{Pat, nullptr, 1, Symmetry};
+    CommPlan *plan = find_plan(key);
+    bool owned = false;
+    if (!plan) {
+        plan = new CommPlan(cpusize);
+        owned = true;
+        plan->dst = build_ghost_gsl(Pat); // ghost region only
+        for (int node = 0; node < cpusize; node++) {
+            plan->src[node] = build_owned_gsl0(Pat, node);
+            build_gstl(plan->src[node], plan->dst,
+                       &plan->transfer_src[node], &plan->transfer_dst[node]);
+        }
+        store_plan(key, plan);
+        owned = false;
+    }
+    transfer(plan->transfer_src, plan->transfer_dst, VarList, VarList, Symmetry);
+    (void)owned;
+#else
     MyList<Parallel::gridseg> *dst;
     MyList<Parallel::gridseg> **src, **transfer_src, **transfer_dst;
     src = new MyList<Parallel::gridseg> *[cpusize];
@@ -2703,9 +3000,8 @@ void Parallel::Sync(Patch *Pat, MyList<var> *VarList, int Symmetry)
     dst = build_ghost_gsl(Pat); // ghost region only
     for (int node = 0; node < cpusize; node++)
     {
-        src[node] = build_owned_gsl0(Pat, node);                              // for the part without ghost points and do not extend
-        build_gstl(src[node], dst, &transfer_src[node], &transfer_dst[node]); // for transfer_src[node], data locate on cpu#node;
-                                                                                                                                                    // but for transfer_dst[node] the data may locate on any node
+        src[node] = build_owned_gsl0(Pat, node);
+        build_gstl(src[node], dst, &transfer_src[node], &transfer_dst[node]);
     }
 
     transfer(transfer_src, transfer_dst, VarList, VarList, Symmetry);
@@ -2714,17 +3010,15 @@ void Parallel::Sync(Patch *Pat, MyList<var> *VarList, int Symmetry)
         dst->destroyList();
     for (int node = 0; node < cpusize; node++)
     {
-        if (src[node])
-            src[node]->destroyList();
-        if (transfer_src[node])
-            transfer_src[node]->destroyList();
-        if (transfer_dst[node])
-            transfer_dst[node]->destroyList();
+        if (src[node]) src[node]->destroyList();
+        if (transfer_src[node]) transfer_src[node]->destroyList();
+        if (transfer_dst[node]) transfer_dst[node]->destroyList();
     }
 
     delete[] src;
     delete[] transfer_src;
     delete[] transfer_dst;
+#endif
 }
 void Parallel::Sync(MyList<Patch> *PatL, MyList<var> *VarList, int Symmetry)
 {
@@ -2740,36 +3034,48 @@ void Parallel::Sync(MyList<Patch> *PatL, MyList<var> *VarList, int Symmetry)
     int cpusize;
     MPI_Comm_size(MPI_COMM_WORLD, &cpusize);
 
+#ifdef AMSS_CACHE_COMM_PLANS
+    PlanKey key{PatL, nullptr, 2, Symmetry};
+    CommPlan *plan = find_plan(key);
+    if (!plan) {
+        plan = new CommPlan(cpusize);
+        plan->dst = build_buffer_gsl(PatL);
+        for (int node = 0; node < cpusize; node++) {
+            plan->src[node] = build_owned_gsl(PatL, node, 5, Symmetry);
+            build_gstl(plan->src[node], plan->dst,
+                       &plan->transfer_src[node], &plan->transfer_dst[node]);
+        }
+        store_plan(key, plan);
+    }
+    transfer(plan->transfer_src, plan->transfer_dst, VarList, VarList, Symmetry);
+#else
     MyList<Parallel::gridseg> *dst;
     MyList<Parallel::gridseg> **src, **transfer_src, **transfer_dst;
     src = new MyList<Parallel::gridseg> *[cpusize];
     transfer_src = new MyList<Parallel::gridseg> *[cpusize];
     transfer_dst = new MyList<Parallel::gridseg> *[cpusize];
 
-    dst = build_buffer_gsl(PatL); // buffer region only
+    dst = build_buffer_gsl(PatL);
     for (int node = 0; node < cpusize; node++)
     {
-        src[node] = build_owned_gsl(PatL, node, 5, Symmetry);                 // for the part without ghost nor buffer points and do not extend
-        build_gstl(src[node], dst, &transfer_src[node], &transfer_dst[node]); // for transfer[node], data locate on cpu#node
+        src[node] = build_owned_gsl(PatL, node, 5, Symmetry);
+        build_gstl(src[node], dst, &transfer_src[node], &transfer_dst[node]);
     }
 
     transfer(transfer_src, transfer_dst, VarList, VarList, Symmetry);
 
-    if (dst)
-        dst->destroyList();
+    if (dst) dst->destroyList();
     for (int node = 0; node < cpusize; node++)
     {
-        if (src[node])
-            src[node]->destroyList();
-        if (transfer_src[node])
-            transfer_src[node]->destroyList();
-        if (transfer_dst[node])
-            transfer_dst[node]->destroyList();
+        if (src[node]) src[node]->destroyList();
+        if (transfer_src[node]) transfer_src[node]->destroyList();
+        if (transfer_dst[node]) transfer_dst[node]->destroyList();
     }
 
     delete[] src;
     delete[] transfer_src;
     delete[] transfer_dst;
+#endif
 }
 // collect buffer grid segments or blocks for the periodic boundary condition of given patch
 // ---------------------------------------------------

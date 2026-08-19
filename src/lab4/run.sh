@@ -8,8 +8,19 @@
 #   AMSS_MPIEXEC      MPI launcher          (default: mpiexec)
 set -euo pipefail
 
-# Ansorg-TwoPuncture allocates large Fortran automatic arrays.
-ulimit -s unlimited
+# Resolve the repository from this script, not from the caller's cwd.  OJ
+# runners commonly invoke an absolute script path from a temporary directory.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${AMSS_ROOT_DIR:-$SCRIPT_DIR}"
+case "$ROOT_DIR" in
+  /*) ;;
+  *) ROOT_DIR="$SCRIPT_DIR/$ROOT_DIR" ;;
+esac
+
+# Ansorg-TwoPuncture allocates large Fortran automatic arrays.  Some OJ
+# sandboxes reject ulimit changes; the executable can still report a useful
+# error or run with the sandbox limit, so do not abort at this line.
+ulimit -s unlimited 2>/dev/null || true
 
 # HPC jobs run inside a root container even when submitted by a regular user.
 # Open MPI 5.x (prterun) therefore needs its explicit container opt-in. These
@@ -19,7 +30,6 @@ export OMPI_ALLOW_RUN_AS_ROOT="${OMPI_ALLOW_RUN_AS_ROOT:-1}"
 export OMPI_ALLOW_RUN_AS_ROOT_CONFIRM="${OMPI_ALLOW_RUN_AS_ROOT_CONFIRM:-1}"
 AMSS_MPIEXEC="${AMSS_MPIEXEC:-mpiexec --allow-run-as-root}"
 
-ROOT_DIR="$(pwd)"
 PYTHON="${PYTHON:-python3}"
 
 resolve_under_root() {
@@ -33,7 +43,14 @@ AMSS_BUILD_DIR="$(resolve_under_root "${AMSS_BUILD_DIR:-$ROOT_DIR/build}")"
 AMSS_OUTPUT_ROOT="$(resolve_under_root "${AMSS_OUTPUT_ROOT:-$ROOT_DIR}")"
 AMSS_CACHE_DIR="$(resolve_under_root "${AMSS_CACHE_DIR:-$ROOT_DIR/twopuncture_cache}")"
 AMSS_MPIEXEC="${AMSS_MPIEXEC:-mpiexec}"
-export AMSS_BUILD_DIR AMSS_OUTPUT_ROOT AMSS_CACHE_DIR AMSS_MPIEXEC
+# Runtime defaults matching the validated CPU path.  They are deliberately
+# environment-overridable for OJ machines with a different core budget.
+export AMSS_BATCH_STENCIL_B="${AMSS_BATCH_STENCIL_B:-2}"
+export AMSS_TWOP_THREADS="${AMSS_TWOP_THREADS:-30}"
+export AMSS_TWOP_NRELAX="${AMSS_TWOP_NRELAX:-10}"
+export AMSS_TWOP_DIAG="${AMSS_TWOP_DIAG:-1}"
+export AMSS_BUILD_DIR AMSS_OUTPUT_ROOT AMSS_CACHE_DIR AMSS_MPIEXEC \
+  AMSS_BATCH_STENCIL_B AMSS_TWOP_THREADS AMSS_TWOP_NRELAX AMSS_TWOP_DIAG
 
 if [[ "${1:-}" == "--twop-cache" ]]; then
   export AMSS_NCKU_TWOP_CACHE=1

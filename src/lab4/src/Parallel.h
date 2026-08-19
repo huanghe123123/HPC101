@@ -97,6 +97,9 @@ namespace Parallel
                                      int Symmetry);
     void Sync(Patch *Pat, MyList<var> *VarList, int Symmetry);
     void Sync(MyList<Patch> *PatL, MyList<var> *VarList, int Symmetry);
+    void clear_plan_cache();
+    void begin_async_sync(MyList<Patch> *PatL, MyList<var> *VarList, int Symmetry, int tag);
+    void finish_async_sync(MyList<Patch> *PatL);
 #ifdef USE_GPU
     void Sync_GPU(Patch *Pat, MyList<var> *VarList, int Symmetry);
     void Sync_GPU(MyList<Patch> *PatL, MyList<var> *VarList, int Symmetry);
@@ -215,6 +218,9 @@ namespace Parallel
     double L2Norm(Patch *Pat, var *vf, MPI_Comm Comm_here);
     double tfer_wait();  // diagnostic: cumulative transfer wait (s)
     long   tfer_n();     // diagnostic: transfer call count
+    double pack_time();    // diagnostic: cumulative data_packer PACK time
+    double wait_time();    // diagnostic: cumulative MPI_Waitall pure wait
+    double unpack_time();  // diagnostic: cumulative data_packer UNPACK time
     bool PatList_Interp_Points(MyList<Patch> *PatL, MyList<var> *VarList,
                                                          int NN, double **XX,
                                                          double *Shellf, int Symmetry, MPI_Comm Comm_here);

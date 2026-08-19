@@ -9,7 +9,7 @@
 #define f_compute_rhs_bssn COMPUTE_RHS_BSSN
 #endif
 #ifdef fortran3
-#define f_compute_rhs_bssn compute_rhs_bssn_
+#define f_compute_rhs_bssn compute_rhs_bssn_fused_  /* TEMP: fused 验证, 原版 compute_rhs_bssn_ */
 #endif
 extern "C"
 {

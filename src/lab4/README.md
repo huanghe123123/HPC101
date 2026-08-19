@@ -59,8 +59,10 @@ at configure time.
 
 `AMSS_MPI_CUDA_AWARE` defaults to `0`. Debian OpenMPI/MPICH do not
 advertise CUDA-aware support and the current AMSS code path uses
-host-staging. To experiment, pass `-DAMSS_MPI_CUDA_AWARE=1` to
-`compile.sh` and verify your MPI actually supports device buffers.
+host-staging. Keep it at `0` for this checkout: the CUDA-aware interpolation
+branches are incomplete and are not currently a supported build/test path.
+If that code is repaired, pass `-DAMSS_MPI_CUDA_AWARE=1` to `compile.sh` only
+after verifying that the MPI implementation actually supports device buffers.
 
 ### A100 MIG and `sm_80`
 
@@ -96,6 +98,15 @@ For a faster debug build:
 ./run.sh
 ```
 
+`compile.sh` and `run.sh` resolve the repository from their own script path,
+so an OJ runner may invoke them from a different working directory. The OJ
+must run `compile.sh` before `run.sh`; `run.sh` intentionally does not compile
+and checks that `ABE` and `TwoPunctureABE` already exist. With no extra CMake
+flags, the default CPU build uses the validated POINTWISE/B=2 BSSN path and
+TwoPuncture OpenMP support. The shipped input remains the 4.0-time smoke
+case; a 40-step submission must change that setting in the OJ wrapper and
+restore it afterward.
+
 Optional TwoPuncture cache:
 
 ```bash
@@ -118,8 +129,12 @@ GW250118/figure/
 `check.sh` resolves `RESULT_DIR` against `AMSS_OUTPUT_ROOT` (or the lab
 root if unset), and `GOLDEN_DIR` against the lab root. The shipped
 `golden/` directory is used by default. Pass an explicit `RESULT_DIR` to
-check a non-default run directory. See `python3 scripts/check_result.py --help`
-for details.
+check a non-default run directory. During a short DevPod/debug run the
+checker may report `FINAL: PASS` on a matched prefix and print a warning when
+the result has fewer timesteps than golden; that is not a complete formal
+correctness result. Before recording a production PASS, confirm that the
+matched timestep count equals the golden count. See
+`python3 scripts/check_result.py --help` for details.
 
 ## Main Files
 

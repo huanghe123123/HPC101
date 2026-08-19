@@ -44,7 +44,7 @@ Finite_Diffenence_Method = "4th-order"             ## fixed in this trimmed lab 
 
 Start_Evolution_Time     = 0.0                    ## start evolution time t0
 ## NOTE: For CPU, set Final_Evolution_Time to 40.0, while GPU keeps it as 100.0
-Final_Evolution_Time     = 100.0 if GPU_Calculation == "yes" else 4.0  ## TEMP profile5 (orig 40.0, restore after)
+Final_Evolution_Time     = 4.0  ## experimental advection smoke
 Check_Time               = 1000.0
 Dump_Time                = 1000.0                  ## time inteval dT for dumping binary data
 D2_Dump_Time             = 1000.0                  ## dump the ascii data for 2d surface after dT'

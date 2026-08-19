@@ -2,6 +2,7 @@
 #ifndef BLOCK_H
 #define BLOCK_H
 
+#include <cstddef>
 #include <mpi.h>
 #include "macrodef.h" //need dim here; Vertex or Cell
 #include "var.h"
@@ -23,6 +24,12 @@ public:
    int ingfs, fngfs;
    int *(*igfs);
    double *(*fgfs); // fine grid functions
+#ifdef AMSS_FGFS_COLORED_SLAB
+   // Raw allocation bases follow fgfs pointers through swapList.  Each field
+   // view is shifted by a small cache-line color while retaining nn
+   // contiguous elements and an independently freeable allocation.
+   double *(*fgfs_base);
+#endif
 
 #ifdef USE_GPU
    // GPU Shadow pointers and valid flags

@@ -2,6 +2,12 @@
 
 #include "macrodef.fh"
 
+#ifdef AMSS_RHS_HALO
+#define FH(i,j,k) halo_get(i,j,k)
+#else
+#define FH(i,j,k) fh(i,j,k)
+#endif
+
 ! we need only distinguish different finite difference order
 ! Vertex or Cell is distinguished in routine symmetry_bd which locates in
 ! file "fmisc.f90"
@@ -24,6 +30,10 @@
 !---------------------------------------------------------------------------------------------
 subroutine kodis(ex,X,Y,Z,f,f_rhs,SoA,Symmetry,eps)
 
+#ifdef AMSS_RHS_HALO
+use rhs_halo
+#endif
+
 implicit none
 ! argument variables
 integer,intent(in) :: Symmetry
@@ -32,12 +42,12 @@ real*8, dimension(1:3), intent(in) :: SoA
 double precision,intent(in),dimension(ex(1))::X
 double precision,intent(in),dimension(ex(2))::Y
 double precision,intent(in),dimension(ex(3))::Z
-double precision,intent(in),dimension(ex(1),ex(2),ex(3))::f
+double precision,target,intent(in),dimension(ex(1),ex(2),ex(3))::f
 double precision,intent(inout),dimension(ex(1),ex(2),ex(3))::f_rhs
 real*8,intent(in) :: eps
 ! local variables
 real*8,dimension(-2:ex(1),-2:ex(2),-2:ex(3))   :: fh
-integer :: imin,jmin,kmin,imax,jmax,kmax
+integer :: imin,jmin,kmin,imax,jmax,kmax,klo,khi
 integer :: i,j,k
 real*8  :: dX,dY,dZ
 real*8, parameter :: ONE=1.d0,SIX=6.d0,FIT=1.5d1,TWT=2.d1
@@ -62,60 +72,49 @@ integer, parameter :: NO_SYMM=0, OCTANT=2
   if(Symmetry == OCTANT .and. dabs(X(1)) < dX) imin = -2
   if(Symmetry == OCTANT .and. dabs(Y(1)) < dY) jmin = -2
 
-  call symmetry_bd(3,ex,f,fh,SoA)
-
-    !$omp parallel do
-  do k=1,ex(3)
-  do j=1,ex(2)
-  do i=1,ex(1)
-
-  if(i-3 >= imin .and. i+3 <= imax .and. &
-     j-3 >= jmin .and. j+3 <= jmax .and. &
-     k-3 >= kmin .and. k+3 <= kmax) then
-#if 0     
-! x direction
-   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/dX/cof * (     &
-                              (fh(i-3,j,k)+fh(i+3,j,k)) - &
-                          SIX*(fh(i-2,j,k)+fh(i+2,j,k)) + &
-                          FIT*(fh(i-1,j,k)+fh(i+1,j,k)) - &
-                          TWT* fh(i,j,k)            )
-! y direction
-
-   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/dY/cof * (     &
-                              (fh(i,j-3,k)+fh(i,j+3,k)) - &
-                          SIX*(fh(i,j-2,k)+fh(i,j+2,k)) + &
-                          FIT*(fh(i,j-1,k)+fh(i,j+1,k)) - &
-                          TWT* fh(i,j,k)            )
-! z direction
-
-   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/dZ/cof * (     &
-                              (fh(i,j,k-3)+fh(i,j,k+3)) - &
-                          SIX*(fh(i,j,k-2)+fh(i,j,k+2)) + &
-                          FIT*(fh(i,j,k-1)+fh(i,j,k+1)) - &
-                          TWT* fh(i,j,k)            )
+#ifdef AMSS_RHS_HALO
+  call halo_bind(f, ex, SoA, Symmetry, 3, kmin)
 #else
-! calculation order if important ?
-   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/cof *( (     &
-                              (fh(i-3,j,k)+fh(i+3,j,k)) - &
-                          SIX*(fh(i-2,j,k)+fh(i+2,j,k)) + &
-                          FIT*(fh(i-1,j,k)+fh(i+1,j,k)) - &
-                          TWT* fh(i,j,k)            )/dX + &
-                                                  (     &
-                              (fh(i,j-3,k)+fh(i,j+3,k)) - &
-                          SIX*(fh(i,j-2,k)+fh(i,j+2,k)) + &
-                          FIT*(fh(i,j-1,k)+fh(i,j+1,k)) - &
-                          TWT* fh(i,j,k)            )/dY + &
-                                                  (     &
-                              (fh(i,j,k-3)+fh(i,j,k+3)) - &
-                          SIX*(fh(i,j,k-2)+fh(i,j,k+2)) + &
-                          FIT*(fh(i,j,k-1)+fh(i,j,k+1)) - &
-                          TWT* fh(i,j,k)            )/dZ )
+  call symmetry_bd(3,ex,f,fh,SoA)
 #endif
-  endif
 
-  enddo
-  enddo
-  enddo
+#ifdef AMSS_RHS_HALO
+  if (legacy_active) then
+    klo = 1
+    khi = ex(3)
+#define FVAL(i,j,k) halo_get(i,j,k)
+    !$omp parallel do
+#include "kodis_loop.fh"
+#undef FVAL
+  else if (halo_active) then
+    klo = 1
+    khi = min(3, ex(3))
+#define FVAL(i,j,k) halo_get(i,j,k)
+    !$omp parallel do
+#include "kodis_loop.fh"
+#undef FVAL
+    klo = 4
+    khi = ex(3)
+#define FVAL(i,j,k) f(i,j,k)
+    !$omp parallel do
+#include "kodis_loop.fh"
+#undef FVAL
+  else
+    klo = 1
+    khi = ex(3)
+#define FVAL(i,j,k) f(i,j,k)
+    !$omp parallel do
+#include "kodis_loop.fh"
+#undef FVAL
+  end if
+#else
+  klo = 1
+  khi = ex(3)
+#define FVAL(i,j,k) fh(i,j,k)
+    !$omp parallel do
+#include "kodis_loop.fh"
+#undef FVAL
+#endif
 
   return
 

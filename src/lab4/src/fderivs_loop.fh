@@ -1,0 +1,101 @@
+  do k=klo,khi
+  do j=1,ex(2)-1
+  do i=1,ex(1)-1
+#if 0  
+! x direction   
+        if(i+2 <= imax .and. i-2 >= imin)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+      fx(i,j,k)=d12dx*(FVAL(i-2,j,k)-EIT*FVAL(i-1,j,k)+EIT*FVAL(i+1,j,k)-FVAL(i+2,j,k))
+
+    elseif(i+1 <= imax .and. i-1 >= imin)then
+!
+!              - f(i-1) + f(i+1)
+!  fx(i) = --------------------------------
+!                     2 dx
+      fx(i,j,k)=d2dx*(-FVAL(i-1,j,k)+FVAL(i+1,j,k))
+
+! set imax and imin 0
+    endif
+! y direction   
+        if(j+2 <= jmax .and. j-2 >= jmin)then
+
+      fy(i,j,k)=d12dy*(FVAL(i,j-2,k)-EIT*FVAL(i,j-1,k)+EIT*FVAL(i,j+1,k)-FVAL(i,j+2,k))
+
+    elseif(j+1 <= jmax .and. j-1 >= jmin)then
+
+     fy(i,j,k)=d2dy*(-FVAL(i,j-1,k)+FVAL(i,j+1,k))
+
+! set jmax and jmin 0
+    endif
+! z direction   
+        if(k+2 <= kmax .and. k-2 >= kmin)then
+
+      fz(i,j,k)=d12dz*(FVAL(i,j,k-2)-EIT*FVAL(i,j,k-1)+EIT*FVAL(i,j,k+1)-FVAL(i,j,k+2))
+
+    elseif(k+1 <= kmax .and. k-1 >= kmin)then
+
+      fz(i,j,k)=d2dz*(-FVAL(i,j,k-1)+FVAL(i,j,k+1))
+
+! set kmax and kmin 0
+    endif
+#elif 0
+! x direction   
+        if(i+2 <= imax .and. i-2 >= imin)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+      fx(i,j,k)=d12dx*(FVAL(i-2,j,k)-EIT*FVAL(i-1,j,k)+EIT*FVAL(i+1,j,k)-FVAL(i+2,j,k))
+
+    elseif(i+3 <= imax .and. i-1 >= imin)then
+      fx(i,j,k)=d12dx*(-3.d0*FVAL(i-1,j,k)-1.d1*FVAL(i,j,k)+1.8d1*FVAL(i+1,j,k)-6.d0*FVAL(i+2,j,k)+FVAL(i+3,j,k))
+    elseif(i+1 <= imax .and. i-3 >= imin)then
+      fx(i,j,k)=d12dx*( 3.d0*FVAL(i+1,j,k)+1.d1*FVAL(i,j,k)-1.8d1*FVAL(i-1,j,k)+6.d0*FVAL(i-2,j,k)-FVAL(i-3,j,k))
+! set imax and imin 0
+    endif
+! y direction   
+        if(j+2 <= jmax .and. j-2 >= jmin)then
+
+      fy(i,j,k)=d12dy*(FVAL(i,j-2,k)-EIT*FVAL(i,j-1,k)+EIT*FVAL(i,j+1,k)-FVAL(i,j+2,k))
+
+    elseif(j+3 <= jmax .and. j-1 >= jmin)then
+      fy(i,j,k)=d12dy*(-3.d0*FVAL(i,j-1,k)-1.d1*FVAL(i,j,k)+1.8d1*FVAL(i,j+1,k)-6.d0*FVAL(i,j+2,k)+FVAL(i,j+3,k))
+    elseif(j+1 <= jmax .and. j-3 >= jmin)then
+      fy(i,j,k)=d12dy*( 3.d0*FVAL(i,j+1,k)+1.d1*FVAL(i,j,k)-1.8d1*FVAL(i,j-1,k)+6.d0*FVAL(i,j-2,k)-FVAL(i,j-3,k))
+
+! set jmax and jmin 0
+    endif
+! z direction   
+        if(k+2 <= kmax .and. k-2 >= kmin)then
+
+      fz(i,j,k)=d12dz*(FVAL(i,j,k-2)-EIT*FVAL(i,j,k-1)+EIT*FVAL(i,j,k+1)-FVAL(i,j,k+2))
+
+    elseif(k+3 <= kmax .and. k-1 >= kmin)then
+      fz(i,j,k)=d12dz*(-3.d0*FVAL(i,j,k-1)-1.d1*FVAL(i,j,k)+1.8d1*FVAL(i,j,k+1)-6.d0*FVAL(i,j,k+2)+FVAL(i,j,k+3))
+    elseif(k+1 <= kmax .and. k-3 >= kmin)then
+      fz(i,j,k)=d12dz*( 3.d0*FVAL(i,j,k+1)+1.d1*FVAL(i,j,k)-1.8d1*FVAL(i,j,k-1)+6.d0*FVAL(i,j,k-2)-FVAL(i,j,k-3))
+
+! set kmax and kmin 0
+    endif
+#else
+! for bam comparison
+   if(i+2 <= imax .and. i-2 >= imin .and. &
+      j+2 <= jmax .and. j-2 >= jmin .and. &
+      k+2 <= kmax .and. k-2 >= kmin) then
+      fx(i,j,k)=d12dx*(FVAL(i-2,j,k)-EIT*FVAL(i-1,j,k)+EIT*FVAL(i+1,j,k)-FVAL(i+2,j,k))
+      fy(i,j,k)=d12dy*(FVAL(i,j-2,k)-EIT*FVAL(i,j-1,k)+EIT*FVAL(i,j+1,k)-FVAL(i,j+2,k))
+      fz(i,j,k)=d12dz*(FVAL(i,j,k-2)-EIT*FVAL(i,j,k-1)+EIT*FVAL(i,j,k+1)-FVAL(i,j,k+2))
+   elseif(i+1 <= imax .and. i-1 >= imin .and. &
+          j+1 <= jmax .and. j-1 >= jmin .and. &
+          k+1 <= kmax .and. k-1 >= kmin) then
+      fx(i,j,k)=d2dx*(-FVAL(i-1,j,k)+FVAL(i+1,j,k))
+      fy(i,j,k)=d2dy*(-FVAL(i,j-1,k)+FVAL(i,j+1,k))
+      fz(i,j,k)=d2dz*(-FVAL(i,j,k-1)+FVAL(i,j,k+1))
+   endif
+#endif
+  enddo
+  enddo
+  enddo

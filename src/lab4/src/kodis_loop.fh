@@ -1,0 +1,51 @@
+  do k=klo,khi
+  do j=1,ex(2)
+  do i=1,ex(1)
+
+  if(i-3 >= imin .and. i+3 <= imax .and. &
+     j-3 >= jmin .and. j+3 <= jmax .and. &
+     k-3 >= kmin .and. k+3 <= kmax) then
+#if 0     
+! x direction
+   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/dX/cof * (     &
+                              (FVAL(i-3,j,k)+FVAL(i+3,j,k)) - &
+                          SIX*(FVAL(i-2,j,k)+FVAL(i+2,j,k)) + &
+                          FIT*(FVAL(i-1,j,k)+FVAL(i+1,j,k)) - &
+                          TWT* FVAL(i,j,k)            )
+! y direction
+
+   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/dY/cof * (     &
+                              (FVAL(i,j-3,k)+FVAL(i,j+3,k)) - &
+                          SIX*(FVAL(i,j-2,k)+FVAL(i,j+2,k)) + &
+                          FIT*(FVAL(i,j-1,k)+FVAL(i,j+1,k)) - &
+                          TWT* FVAL(i,j,k)            )
+! z direction
+
+   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/dZ/cof * (     &
+                              (FVAL(i,j,k-3)+FVAL(i,j,k+3)) - &
+                          SIX*(FVAL(i,j,k-2)+FVAL(i,j,k+2)) + &
+                          FIT*(FVAL(i,j,k-1)+FVAL(i,j,k+1)) - &
+                          TWT* FVAL(i,j,k)            )
+#else
+! calculation order if important ?
+   f_rhs(i,j,k)       = f_rhs(i,j,k) + eps/cof *( (     &
+                              (FVAL(i-3,j,k)+FVAL(i+3,j,k)) - &
+                          SIX*(FVAL(i-2,j,k)+FVAL(i+2,j,k)) + &
+                          FIT*(FVAL(i-1,j,k)+FVAL(i+1,j,k)) - &
+                          TWT* FVAL(i,j,k)            )/dX + &
+                                                  (     &
+                              (FVAL(i,j-3,k)+FVAL(i,j+3,k)) - &
+                          SIX*(FVAL(i,j-2,k)+FVAL(i,j+2,k)) + &
+                          FIT*(FVAL(i,j-1,k)+FVAL(i,j+1,k)) - &
+                          TWT* FVAL(i,j,k)            )/dY + &
+                                                  (     &
+                              (FVAL(i,j,k-3)+FVAL(i,j,k+3)) - &
+                          SIX*(FVAL(i,j,k-2)+FVAL(i,j,k+2)) + &
+                          FIT*(FVAL(i,j,k-1)+FVAL(i,j,k+1)) - &
+                          TWT* FVAL(i,j,k)            )/dZ )
+#endif
+  endif
+
+  enddo
+  enddo
+  enddo

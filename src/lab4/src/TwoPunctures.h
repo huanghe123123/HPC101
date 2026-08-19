@@ -21,6 +21,17 @@ public:
               double *d0, *d1, *d2, *d3, *d11, *d12, *d13, *d22, *d23, *d33;
        } derivs;
 
+       typedef struct LINE_WORKSPACE
+       {
+              double *diag;
+              double *upper;
+              double *lower;
+              double *rhs;
+              double *solution;
+              int stride;
+              int count;
+       } line_workspace;
+
        double *F;
        derivs u, v;
 
@@ -41,6 +52,21 @@ private:
        int Newton_maxit;
 
        int ntotal;
+
+       // Cached transform tables for the fixed spectral grid.  The solver
+       // repeatedly applies the same Chebyshev/Fourier bases during every
+       // Newton and Krylov iteration.
+       double *cheb_A_forward;
+       double *cheb_A_inverse;
+       double *cheb_B_forward;
+       double *cheb_B_inverse;
+       double *fourier_cos;
+       double *fourier_sin;
+       double *grid_A;
+       double *grid_B;
+       double *grid_sin_A;
+       double *grid_sin_B;
+       double *grid_phi;
 
        struct parameters
        {
@@ -107,6 +133,7 @@ public:
        double norm_inf(double const *F, int const ntotal);
        int bicgstab(int const nvar, int const n1, int const n2, int const n3,
                     derivs v, derivs dv, int const itmax, double const tol,
+                    int const relax_sweeps,
                     double *normres);
        void allocate_derivs(derivs *v, int n);
        void free_derivs(derivs *v, int n);
@@ -114,15 +141,19 @@ public:
        void NonLinEquations(double rho_adm, double A, double B, double X, double R, double x, double r, double phi,
                             double y, double z, derivs U, double *values);
        double BY_KKofxyz(double x, double y, double z);
-       void SetMatrix_JFD(int nvar, int n1, int n2, int n3, derivs u, int *ncols, int **cols, double **Matrix);
+       void SetMatrix_JFD(int nvar, int n1, int n2, int n3, derivs u, int *ncols, int *cols, double *Matrix);
        void J_times_dv(int nvar, int n1, int n2, int n3, derivs dv, double *Jdv, derivs u);
        void relax(double *dv, int const nvar, int const n1, int const n2, int const n3,
-                  double const *rhs, int const *ncols, int **cols, double **JFD);
+                  double const *rhs, int const *ncols, int const *cols, double const *JFD,
+                  line_workspace &workspace);
+       void relax_many(double *dv, int const nvar, int const n1, int const n2, int const n3,
+                      double const *rhs, int const *ncols, int const *cols, double const *JFD,
+                      int const sweeps, line_workspace &workspace);
        void LineRelax_be(double *dv,
                          int const i, int const k, int const nvar,
                          int const n1, int const n2, int const n3,
-                         double const *rhs, int const *ncols, int **cols,
-                         double **JFD);
+                         double const *rhs, int const *ncols, int const *cols,
+                         double const *JFD, line_workspace &workspace);
        void JFD_times_dv(int i, int j, int k, int nvar, int n1, int n2,
                          int n3, derivs dv, derivs u, double *values);
        void LinEquations(double A, double B, double X, double R,
@@ -132,7 +163,7 @@ public:
                          int const j, int const k, int const nvar,
                          int const n1, int const n2, int const n3,
                          double const *rhs, int const *ncols,
-                         int **cols, double **JFD);
+                         int const *cols, double const *JFD, line_workspace &workspace);
        void ThomasAlgorithm(int N, double *b, double *a, double *c, double *x, double *q);
        void Save(char *fname);
        // provided by Vasileios Paschalidis (vpaschal@illinois.edu)

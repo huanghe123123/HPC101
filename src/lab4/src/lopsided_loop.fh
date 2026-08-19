@@ -1,0 +1,249 @@
+  do k=klo,khi
+  do j=1,ex(2)-1
+  do i=1,ex(1)-1
+#if 0  
+!! old code
+! x direction   
+    if(Sfx(i,j,k) >= ZEO .and. i+3 <= imax .and. i-1 >= imin)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfx(i,j,k)*d12dx*(-F3*FVAL(i-1,j,k)-F10*FVAL(i,j,k)+F18*FVAL(i+1,j,k) &
+                                    -F6*FVAL(i+2,j,k)+    FVAL(i+3,j,k))
+
+    elseif(Sfx(i,j,k) <= ZEO .and. i-3 >= imin .and. i+1 <= imax)then
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfx(i,j,k)*d12dx*(-F3*FVAL(i+1,j,k)-F10*FVAL(i,j,k)+F18*FVAL(i-1,j,k) &
+                                    -F6*FVAL(i-2,j,k)+    FVAL(i-3,j,k))
+
+     elseif(i+2 <= imax .and. i-2 >= imin)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                           &
+                  Sfx(i,j,k)*d12dx*(FVAL(i-2,j,k)-EIT*FVAL(i-1,j,k)+EIT*FVAL(i+1,j,k)-FVAL(i+2,j,k))
+
+     elseif(i+1 <= imax .and. i-1 >= imin)then
+!
+!              - f(i-1) + f(i+1)
+!  fx(i) = --------------------------------
+!                     2 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k) + Sfx(i,j,k)*d2dx*(-FVAL(i-1,j,k)+FVAL(i+1,j,k))
+
+! set imax and imin 0
+    endif
+
+! y direction   
+    if(Sfy(i,j,k) >= ZEO .and. j+3 <= jmax .and. j-1 >= jmin)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfy(i,j,k)*d12dy*(-F3*FVAL(i,j-1,k)-F10*FVAL(i,j,k)+F18*FVAL(i,j+1,k) &
+                                    -F6*FVAL(i,j+2,k)+    FVAL(i,j+3,k))
+
+    elseif(Sfy(i,j,k) <= ZEO .and. j-3 >= jmin .and. j+1 <= jmax)then
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfy(i,j,k)*d12dy*(-F3*FVAL(i,j+1,k)-F10*FVAL(i,j,k)+F18*FVAL(i,j-1,k) &
+                                    -F6*FVAL(i,j-2,k)+    FVAL(i,j-3,k))
+
+     elseif(j+2 <= jmax .and. j-2 >= jmin)then
+
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                            &
+                  Sfy(i,j,k)*d12dy*(FVAL(i,j-2,k)-EIT*FVAL(i,j-1,k)+EIT*FVAL(i,j+1,k)-FVAL(i,j+2,k))
+
+     elseif(j+1 <= jmax .and. j-1 >= jmin)then
+
+     f_rhs(i,j,k)=f_rhs(i,j,k) + Sfy(i,j,k)*d2dy*(-FVAL(i,j-1,k)+FVAL(i,j+1,k))
+! set jmin and jmax 0
+     endif
+!! z direction   
+    if(Sfz(i,j,k) >= ZEO .and. k+3 <= kmax .and. k-1 >= kmin)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfz(i,j,k)*d12dz*(-F3*FVAL(i,j,k-1)-F10*FVAL(i,j,k)+F18*FVAL(i,j,k+1) &
+                                    -F6*FVAL(i,j,k+2)+    FVAL(i,j,k+3))
+
+    elseif(Sfz(i,j,k) <= ZEO .and. k-3 >= kmin .and. k+1 <= kmax)then
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfz(i,j,k)*d12dz*(-F3*FVAL(i,j,k+1)-F10*FVAL(i,j,k)+F18*FVAL(i,j,k-1) &
+                                    -F6*FVAL(i,j,k-2)+    FVAL(i,j,k-3))
+
+     elseif(k+2 <= kmax .and. k-2 >= kmin)then
+
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                            &
+                  Sfz(i,j,k)*d12dz*(FVAL(i,j,k-2)-EIT*FVAL(i,j,k-1)+EIT*FVAL(i,j,k+1)-FVAL(i,j,k+2))
+
+     elseif(k+1 <= kmax .and. k-1 >= kmin)then
+
+     f_rhs(i,j,k)=f_rhs(i,j,k)+Sfz(i,j,k)*d2dz*(-FVAL(i,j,k-1)+FVAL(i,j,k+1))
+! set kmin and kmax 0
+     endif
+#else
+!! new code, 2012dec27, based on bam
+! x direction   
+    if(Sfx(i,j,k) > ZEO)then
+      if(i+3 <= imax)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfx(i,j,k)*d12dx*(-F3*FVAL(i-1,j,k)-F10*FVAL(i,j,k)+F18*FVAL(i+1,j,k) &
+                                    -F6*FVAL(i+2,j,k)+    FVAL(i+3,j,k))
+     elseif(i+2 <= imax)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                           &
+                  Sfx(i,j,k)*d12dx*(FVAL(i-2,j,k)-EIT*FVAL(i-1,j,k)+EIT*FVAL(i+1,j,k)-FVAL(i+2,j,k))
+
+     elseif(i+1 <= imax)then
+!         v
+! D f = ------[   3f    + 10f  - 18f    + 6f     - f     ]
+!  i     12dx       i+v      i      i-v     i-2v    i-3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfx(i,j,k)*d12dx*(-F3*FVAL(i+1,j,k)-F10*FVAL(i,j,k)+F18*FVAL(i-1,j,k) &
+                                    -F6*FVAL(i-2,j,k)+    FVAL(i-3,j,k))
+! set imax and imin 0
+     endif
+   elseif(Sfx(i,j,k) < ZEO)then
+      if(i-3 >= imin)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfx(i,j,k)*d12dx*(-F3*FVAL(i+1,j,k)-F10*FVAL(i,j,k)+F18*FVAL(i-1,j,k) &
+                                    -F6*FVAL(i-2,j,k)+    FVAL(i-3,j,k))
+     elseif(i-2 >= imin)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                           &
+                  Sfx(i,j,k)*d12dx*(FVAL(i-2,j,k)-EIT*FVAL(i-1,j,k)+EIT*FVAL(i+1,j,k)-FVAL(i+2,j,k))
+
+     elseif(i-1 >= imin)then
+!         v
+! D f = ------[   3f    + 10f  - 18f    + 6f     - f     ]
+!  i     12dx       i+v      i      i-v     i-2v    i-3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfx(i,j,k)*d12dx*(-F3*FVAL(i-1,j,k)-F10*FVAL(i,j,k)+F18*FVAL(i+1,j,k) &
+                                    -F6*FVAL(i+2,j,k)+    FVAL(i+3,j,k))
+! set imax and imin 0
+     endif
+   endif
+
+! y direction   
+    if(Sfy(i,j,k) > ZEO)then
+      if(j+3 <= jmax)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfy(i,j,k)*d12dy*(-F3*FVAL(i,j-1,k)-F10*FVAL(i,j,k)+F18*FVAL(i,j+1,k) &
+                                    -F6*FVAL(i,j+2,k)+    FVAL(i,j+3,k))
+     elseif(j+2 <= jmax)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                           &
+                  Sfy(i,j,k)*d12dy*(FVAL(i,j-2,k)-EIT*FVAL(i,j-1,k)+EIT*FVAL(i,j+1,k)-FVAL(i,j+2,k))
+
+     elseif(j+1 <= jmax)then
+!         v
+! D f = ------[   3f    + 10f  - 18f    + 6f     - f     ]
+!  i     12dx       i+v      i      i-v     i-2v    i-3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfy(i,j,k)*d12dy*(-F3*FVAL(i,j+1,k)-F10*FVAL(i,j,k)+F18*FVAL(i,j-1,k) &
+                                    -F6*FVAL(i,j-2,k)+    FVAL(i,j-3,k))
+! set imax and imin 0
+     endif
+   elseif(Sfy(i,j,k) < ZEO)then
+      if(j-3 >= jmin)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfy(i,j,k)*d12dy*(-F3*FVAL(i,j+1,k)-F10*FVAL(i,j,k)+F18*FVAL(i,j-1,k) &
+                                    -F6*FVAL(i,j-2,k)+    FVAL(i,j-3,k))
+     elseif(j-2 >= jmin)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                           &
+                  Sfy(i,j,k)*d12dy*(FVAL(i,j-2,k)-EIT*FVAL(i,j-1,k)+EIT*FVAL(i,j+1,k)-FVAL(i,j+2,k))
+
+     elseif(j-1 >= jmin)then
+!         v
+! D f = ------[   3f    + 10f  - 18f    + 6f     - f     ]
+!  i     12dx       i+v      i      i-v     i-2v    i-3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfy(i,j,k)*d12dy*(-F3*FVAL(i,j-1,k)-F10*FVAL(i,j,k)+F18*FVAL(i,j+1,k) &
+                                    -F6*FVAL(i,j+2,k)+    FVAL(i,j+3,k))
+! set jmax and jmin 0
+     endif
+   endif
+
+! z direction   
+    if(Sfz(i,j,k) > ZEO)then
+      if(k+3 <= kmax)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfz(i,j,k)*d12dz*(-F3*FVAL(i,j,k-1)-F10*FVAL(i,j,k)+F18*FVAL(i,j,k+1) &
+                                    -F6*FVAL(i,j,k+2)+    FVAL(i,j,k+3))
+     elseif(k+2 <= kmax)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                           &
+                  Sfz(i,j,k)*d12dz*(FVAL(i,j,k-2)-EIT*FVAL(i,j,k-1)+EIT*FVAL(i,j,k+1)-FVAL(i,j,k+2))
+
+     elseif(k+1 <= kmax)then
+!         v
+! D f = ------[   3f    + 10f  - 18f    + 6f     - f     ]
+!  i     12dx       i+v      i      i-v     i-2v    i-3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfz(i,j,k)*d12dz*(-F3*FVAL(i,j,k+1)-F10*FVAL(i,j,k)+F18*FVAL(i,j,k-1) &
+                                    -F6*FVAL(i,j,k-2)+    FVAL(i,j,k-3))
+! set imax and imin 0
+     endif
+   elseif(Sfz(i,j,k) < ZEO)then
+      if(k-3 >= kmin)then
+!         v
+! D f = ------[ - 3f    - 10f  + 18f    - 6f     + f     ]
+!  i     12dx       i-v      i      i+v     i+2v    i+3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)-                                                   &
+                  Sfz(i,j,k)*d12dz*(-F3*FVAL(i,j,k+1)-F10*FVAL(i,j,k)+F18*FVAL(i,j,k-1) &
+                                    -F6*FVAL(i,j,k-2)+    FVAL(i,j,k-3))
+     elseif(k-2 >= kmin)then
+!
+!              f(i-2) - 8 f(i-1) + 8 f(i+1) - f(i+2)
+!  fx(i) = ---------------------------------------------
+!                             12 dx
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                           &
+                  Sfz(i,j,k)*d12dz*(FVAL(i,j,k-2)-EIT*FVAL(i,j,k-1)+EIT*FVAL(i,j,k+1)-FVAL(i,j,k+2))
+
+     elseif(k-1 >= kmin)then
+!         v
+! D f = ------[   3f    + 10f  - 18f    + 6f     - f     ]
+!  i     12dx       i+v      i      i-v     i-2v    i-3v
+     f_rhs(i,j,k)=f_rhs(i,j,k)+                                                   &
+                  Sfz(i,j,k)*d12dz*(-F3*FVAL(i,j,k-1)-F10*FVAL(i,j,k)+F18*FVAL(i,j,k+1) &
+                                    -F6*FVAL(i,j,k+2)+    FVAL(i,j,k+3))
+! set kmax and kmin 0
+     endif
+   endif
+#endif
+  enddo
+  enddo
+  enddo

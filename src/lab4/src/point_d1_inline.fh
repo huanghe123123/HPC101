@@ -1,0 +1,21 @@
+! Point-local first derivative stencil.  The caller defines:
+!   PW_FIELD, PW_S1/PW_S2/PW_S3, PW_FX/PW_FY/PW_FZ
+! and PW_VALUE(ii,jj,kk), which is supplied by the caller.  The hot bulk
+! path supplies a direct array lookup; only the two reflected z-planes use
+! the legacy point helper.
+
+PW_FX = 0.d0
+PW_FY = 0.d0
+PW_FZ = 0.d0
+if (pw_order == 4) then
+  PW_FX = pw_d12x*(PW_VALUE(i-2,j,k)-8.d0*PW_VALUE(i-1,j,k)+ &
+                   8.d0*PW_VALUE(i+1,j,k)-PW_VALUE(i+2,j,k))
+  PW_FY = pw_d12y*(PW_VALUE(i,j-2,k)-8.d0*PW_VALUE(i,j-1,k)+ &
+                   8.d0*PW_VALUE(i,j+1,k)-PW_VALUE(i,j+2,k))
+  PW_FZ = pw_d12z*(PW_VALUE(i,j,k-2)-8.d0*PW_VALUE(i,j,k-1)+ &
+                   8.d0*PW_VALUE(i,j,k+1)-PW_VALUE(i,j,k+2))
+else if (pw_order == 2) then
+  PW_FX = pw_d2x*(-PW_VALUE(i-1,j,k)+PW_VALUE(i+1,j,k))
+  PW_FY = pw_d2y*(-PW_VALUE(i,j-1,k)+PW_VALUE(i,j+1,k))
+  PW_FZ = pw_d2z*(-PW_VALUE(i,j,k-1)+PW_VALUE(i,j,k+1))
+end if

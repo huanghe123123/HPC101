@@ -47,6 +47,7 @@ cgh::cgh(int ingfsi, int fngfsi, int Symmetry, char *filename, int checkrun,
 
 cgh::~cgh()
 {
+    Parallel::clear_plan_cache();
     for (int lev = 0; lev < levels; lev++)
     {
         for (int grd = 0; grd < grids[lev]; grd++)
@@ -461,6 +462,7 @@ void cgh::recompose_cgh(int nprocs, bool *lev_flag,
                                                 MyList<var> *FutureList, MyList<var> *tmList,
                                                 int Symmetry, bool BB)
 {
+    Parallel::clear_plan_cache();
     for (int lev = movls; lev < levels; lev++)
         if (lev_flag[lev - movls])
         {
@@ -939,6 +941,7 @@ void cgh::recompose_cgh_Onelevel(
     MyList<var> *FutureList, MyList<var> *tmList,
     int Symmetry, bool BB
 ) {
+    Parallel::clear_plan_cache();
     MyList<Patch> *tmPat = 0;
     tmPat = construct_patchlist(lev, Symmetry);
     // tmPat construction completes

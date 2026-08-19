@@ -409,6 +409,151 @@ void Patch::Interp_Points(MyList<var> *VarList,
     cudaFree(d_shellf);
     cudaFree(d_weight);
 #else
+    // ========================================================================
+    // Distributed spherical interpolation (AMSS_DISTRIB_INTERP)
+    //
+    // The sphere (Rex=50..100) lies entirely in the single lev0 block whose
+    // bbox contains the origin; only that block's owner rank has the field data
+    // (fgfs/X are allocated only on myrank==rank, see Block.C). The original
+    // code gated interpolation on `myrank == BP->rank`, so only one rank did
+    // real work while the other 29 busy-waited at the final MPI_Allreduce.
+    //
+    // Fix: broadcast the sphere-containing block's VarList data + coordinate
+    // arrays to ALL ranks, then each rank interpolates only its contiguous
+    // slice of the NN points. Every point is computed by exactly one rank; the
+    // existing MPI_Allreduce(SUM) reconstructs the full result identically.
+    //
+    // Gate on NN: the single-point BH-position probe (NN==1 via
+    // PatList_Interp_Points) and small queries keep the original per-block
+    // ownership path (cheaper, no bcast). Compile with -DDISTRIB_INTERP_OFF
+    // to force the original path for all NN (A/B comparison).
+    // ========================================================================
+#ifndef DISTRIB_INTERP_OFF
+    if (NN >= 256)
+    {
+    int cpusize_d = 0;
+    MPI_Comm_size(MPI_COMM_WORLD, &cpusize_d);
+
+    // ---- 1. find the block whose bbox contains the first point ----
+    Block *cblk = nullptr;
+    int owner = -1;
+    {
+        double p0[dim];
+        for (int i = 0; i < dim; i++) p0[i] = XX[i][0];
+        MyList<Block> *Bp = blb;
+        while (Bp)
+        {
+            Block *BP = Bp->data;
+            bool host = true;
+            for (int i = 0; i < dim; i++)
+                if (p0[i] < BP->bbox[i] || p0[i] > BP->bbox[dim + i])
+                { host = false; break; }
+            if (host)
+            { cblk = BP; owner = BP->rank; break; }
+            if (Bp == ble) break;
+            Bp = Bp->next;
+        }
+    }
+    if (!cblk)
+    {
+        if (myrank == 0)
+            cout << "ERROR: Interp_Points (distrib) cannot find host block for first point on Patch bbox ("
+                 << bbox[0] << ":" << bbox[dim] << ", " << bbox[1] << ":" << bbox[dim+1]
+                 << ", " << bbox[2] << ":" << bbox[dim+2] << ")" << endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    // ---- 2. geometry of the host block (shape valid on all ranks) ----
+    int cshape[dim];
+    int cnn = 1;
+    for (int i = 0; i < dim; i++)
+    {
+        cshape[i] = cblk->shape[i];
+        cnn *= cshape[i];
+    }
+
+    // ---- 3. shadow buffers (cached across calls; same geometry for all
+    //          16 Interp_Points calls per coarse step) ----
+    static double **sfgfs = nullptr;
+    static double *sX[dim] = {nullptr, nullptr, nullptr};
+    static int s_cnn = 0, s_num_var = 0;
+    static int s_shape[dim] = {0, 0, 0};
+    bool shape_changed = (s_cnn != cnn) || (s_num_var != num_var);
+    for (int i = 0; i < dim; i++)
+        if (s_shape[i] != cshape[i]) shape_changed = true;
+    if (shape_changed && sfgfs)
+    {
+        for (int k = 0; k < s_num_var; k++) delete[] sfgfs[k];
+        delete[] sfgfs; sfgfs = nullptr;
+        for (int i = 0; i < dim; i++) { delete[] sX[i]; sX[i] = nullptr; }
+    }
+    if (!sfgfs)
+    {
+        sfgfs = new double *[num_var];
+        for (int k = 0; k < num_var; k++) sfgfs[k] = new double[cnn];
+        for (int i = 0; i < dim; i++) sX[i] = new double[cshape[i]];
+        s_cnn = cnn; s_num_var = num_var;
+        for (int i = 0; i < dim; i++) s_shape[i] = cshape[i];
+    }
+
+    // ---- 4. owner packs, then broadcast to all ranks ----
+    if (myrank == owner)
+    {
+        MyList<var> *vl = VarList;
+        int k = 0;
+        while (vl)
+        {
+            memcpy(sfgfs[k], cblk->fgfs[vl->data->sgfn], cnn * sizeof(double));
+            vl = vl->next; k++;
+        }
+        for (int i = 0; i < dim; i++)
+            memcpy(sX[i], cblk->X[i], cshape[i] * sizeof(double));
+    }
+    for (int k = 0; k < num_var; k++)
+        MPI_Bcast(sfgfs[k], cnn, MPI_DOUBLE, owner, MPI_COMM_WORLD);
+    for (int i = 0; i < dim; i++)
+        MPI_Bcast(sX[i], cshape[i], MPI_DOUBLE, owner, MPI_COMM_WORLD);
+
+    // ---- 5. sort points by 3D position for cache-friendly access (7512252) ----
+    int *idx = new int[NN];
+    for (int j = 0; j < NN; j++) idx[j] = j;
+    std::sort(idx, idx + NN, [&](int a, int b) {
+        if (XX[0][a] < XX[0][b]) return true;
+        if (XX[0][b] < XX[0][a]) return false;
+        if (XX[1][a] < XX[1][b]) return true;
+        if (XX[1][b] < XX[1][a]) return false;
+        return XX[2][a] < XX[2][b];
+    });
+
+    // ---- 6. each rank interpolates its contiguous slice of points ----
+    int n_per = NN / cpusize_d;
+    int n_rem = NN % cpusize_d;
+    int jstart = myrank * n_per + (myrank < n_rem ? myrank : n_rem);
+    int jend = jstart + n_per + (myrank < n_rem ? 1 : 0);
+
+    for (int jj = jstart; jj < jend; jj++)
+    {
+        int j = idx[jj];
+        double pox[dim];
+        for (int i = 0; i < dim; i++) pox[i] = XX[i][j];
+
+        MyList<var> *varl_ = VarList;
+        int k = 0;
+        while (varl_)
+        {
+            f_global_interp(cshape, sX[0], sX[1], sX[2], sfgfs[k],
+                            shellf[j * num_var + k],
+                            pox[0], pox[1], pox[2], ordn, varl_->data->SoA, Symmetry);
+            varl_ = varl_->next; k++;
+        }
+        weight[j] = 1;
+    }
+    delete[] idx;
+    }
+    else
+#endif /* DISTRIB_INTERP_OFF */
+    {
+    // ---- original single-rank + OpenMP path (NN<256 / BH probe / DISTRIB_OFF) ----
     // sort interpolation points by 3D position for cache-friendly access
     int *idx = new int[NN];
     for (int j = 0; j < NN; j++) idx[j] = j;
@@ -471,19 +616,20 @@ void Patch::Interp_Points(MyList<var> *VarList,
         }
     }
     delete[] idx;
+    }
 #endif
 
     // ================== GPU 零拷贝重构部分 结束 ==================
 
+    int *Weight;
 #ifdef USE_GPU
     // GPU produced shellf/weight directly on host (above). Compute Weight via Allreduce.
-    int *Weight = new int[NN];
+    Weight = new int[NN];
     MPI_Allreduce(weight, Weight, NN, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     // (shellf was already reduced into Shellf inside the GPU block.)
 #else
     // CPU path: Allreduce the local shellf/weight into Shellf/Weight.
     MPI_Allreduce(shellf, Shellf, NN * num_var, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    int *Weight;
     Weight = new int[NN];
     MPI_Allreduce(weight, Weight, NN, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 #endif
