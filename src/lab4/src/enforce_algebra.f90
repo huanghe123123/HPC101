@@ -131,3 +131,69 @@
   return
 
   end subroutine enforce_ga
+
+! Pointwise form of enforce_ga.  The array-syntax version above materializes
+! several full-block temporaries (gxx/gyy/gzz, inverse-metric cofactors and
+! trA).  This variant preserves the same algebraic sequence at each point
+! while keeping those values in scalar temporaries.
+  subroutine enforce_ga_pointwise(ex,  dxx,  gxy,  gxz,  dyy,  gyz,  dzz, &
+                                  Axx,  Axy,  Axz,  Ayy,  Ayz,  Azz)
+  implicit none
+
+  integer, intent(in) :: ex(1:3)
+  real*8, dimension(ex(1),ex(2),ex(3)), intent(inout) :: dxx,dyy,dzz
+  real*8, dimension(ex(1),ex(2),ex(3)), intent(inout) :: gxy,gxz,gyz
+  real*8, dimension(ex(1),ex(2),ex(3)), intent(inout) :: Axx,Axy,Axz,Ayy,Ayz,Azz
+
+  integer :: i,j,k
+  real*8 :: gxxs,gyys,gzzs,detg,scale
+  real*8 :: gupxxs,gupxys,gupxzs,gupyys,gupyzs,gupzzs,trAs
+  real*8, parameter :: F1o3 = 1.D0 / 3.D0, ONE = 1.D0, TWO = 2.D0
+
+  do k = 1, ex(3)
+    do j = 1, ex(2)
+      do i = 1, ex(1)
+        gxxs = dxx(i,j,k) + ONE
+        gyys = dyy(i,j,k) + ONE
+        gzzs = dzz(i,j,k) + ONE
+
+        detg = gxxs * gyys * gzzs + gxy(i,j,k) * gyz(i,j,k) * gxz(i,j,k) + &
+               gxz(i,j,k) * gxy(i,j,k) * gyz(i,j,k) - &
+               gxz(i,j,k) * gyys * gxz(i,j,k) - &
+               gxy(i,j,k) * gxy(i,j,k) * gzzs - &
+               gxxs * gyz(i,j,k) * gyz(i,j,k)
+        scale = ONE / (detg ** F1o3)
+
+        gxxs = gxxs * scale
+        gxy(i,j,k) = gxy(i,j,k) * scale
+        gxz(i,j,k) = gxz(i,j,k) * scale
+        gyys = gyys * scale
+        gyz(i,j,k) = gyz(i,j,k) * scale
+        gzzs = gzzs * scale
+
+        dxx(i,j,k) = gxxs - ONE
+        dyy(i,j,k) = gyys - ONE
+        dzz(i,j,k) = gzzs - ONE
+
+        gupxxs = gyys * gzzs - gyz(i,j,k) * gyz(i,j,k)
+        gupxys = -(gxy(i,j,k) * gzzs - gyz(i,j,k) * gxz(i,j,k))
+        gupxzs =  (gxy(i,j,k) * gyz(i,j,k) - gyys * gxz(i,j,k))
+        gupyys =  gxxs * gzzs - gxz(i,j,k) * gxz(i,j,k)
+        gupyzs = -(gxxs * gyz(i,j,k) - gxy(i,j,k) * gxz(i,j,k))
+        gupzzs =  gxxs * gyys - gxy(i,j,k) * gxy(i,j,k)
+
+        trAs = gupxxs * Axx(i,j,k) + gupyys * Ayy(i,j,k) + gupzzs * Azz(i,j,k) + &
+               TWO * (gupxys * Axy(i,j,k) + gupxzs * Axz(i,j,k) + gupyzs * Ayz(i,j,k))
+
+        Axx(i,j,k) = Axx(i,j,k) - F1o3 * gxxs * trAs
+        Axy(i,j,k) = Axy(i,j,k) - F1o3 * gxy(i,j,k) * trAs
+        Axz(i,j,k) = Axz(i,j,k) - F1o3 * gxz(i,j,k) * trAs
+        Ayy(i,j,k) = Ayy(i,j,k) - F1o3 * gyys * trAs
+        Ayz(i,j,k) = Ayz(i,j,k) - F1o3 * gyz(i,j,k) * trAs
+        Azz(i,j,k) = Azz(i,j,k) - F1o3 * gzzs * trAs
+      end do
+    end do
+  end do
+
+  return
+  end subroutine enforce_ga_pointwise

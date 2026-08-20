@@ -30,6 +30,192 @@ static double g_ana_total = 0.0;  // diagnostic: cumulative AnalysisStuff time
 
 #include "derivatives.h"
 
+#ifdef AMSS_ENFORCE_GA_POINTWISE
+static inline void amss_enforce_ga_pointwise(
+    int *ex,
+    double *dxx, double *gxy, double *gxz, double *dyy, double *gyz, double *dzz,
+    double *Axx, double *Axy, double *Axz, double *Ayy, double *Ayz, double *Azz)
+{
+  f_enforce_ga_pointwise(ex, dxx, gxy, gxz, dyy, gyz, dzz,
+                         Axx, Axy, Axz, Ayy, Ayz, Azz);
+}
+#undef f_enforce_ga
+#define f_enforce_ga amss_enforce_ga_pointwise
+#endif
+
+#ifdef AMSS_SOMMERFELD_BATCHED
+static inline double amss_sommerfeld_zread(const double *p, int i, int j, int k,
+                                           int nx, int ny, double soaz)
+{
+  if (k >= 0)
+    return p[i + j * nx + k * nx * ny];
+  return soaz * p[i + j * nx + (-k - 1) * nx * ny];
+}
+
+// Batched BAM/Sommerfeld RHS update for the production equatorial/no-symmetry
+// cases.  The original routine rebuilds the same six boundary face ranges
+// and coordinate factors once per field.  Here those ranges and R are shared,
+// while each field keeps its own propagation speed and parity.
+static void amss_sommerfeld_routbam_batch(
+    const int *ex, const double *X, const double *Y, const double *Z,
+    double xmin, double ymin, double zmin, double xmax, double ymax, double zmax,
+    double **f_rhs, double **f0, const double *velocity, const double *soaz,
+    int nv, int symmetry)
+{
+  const int nx = ex[0], ny = ex[1], nz = ex[2];
+  const double dx = X[1] - X[0], dy = Y[1] - Y[0], dz = Z[1] - Z[0];
+  const double d2x = 0.5 / dx, d2y = 0.5 / dy, d2z = 0.5 / dz;
+  const int kmin = (symmetry > 0 && std::fabs(Z[0]) < dz) ? 0 : 1;
+  int lo[6][3], hi[6][3];
+  for (int face = 0; face < 6; ++face) {
+    lo[face][0] = lo[face][1] = lo[face][2] = 0;
+    hi[face][0] = hi[face][1] = hi[face][2] = -1;
+  }
+  if (std::fabs(X[nx - 1] - xmax) < dx) {
+    lo[0][0] = hi[0][0] = nx - 1; lo[0][1] = 0; hi[0][1] = ny - 1; lo[0][2] = 0; hi[0][2] = nz - 1;
+  }
+  if (std::fabs(Y[ny - 1] - ymax) < dy) {
+    lo[1][1] = hi[1][1] = ny - 1; lo[1][0] = 0; hi[1][0] = nx - 1; lo[1][2] = 0; hi[1][2] = nz - 1;
+  }
+  if (std::fabs(Z[nz - 1] - zmax) < dz) {
+    lo[2][2] = hi[2][2] = nz - 1; lo[2][0] = 0; hi[2][0] = nx - 1; lo[2][1] = 0; hi[2][1] = ny - 1;
+  }
+  if (std::fabs(X[0] - xmin) < dx && !(symmetry == 2 && std::fabs(xmin) < dx / 2.0)) {
+    lo[3][0] = hi[3][0] = 0; lo[3][1] = 0; hi[3][1] = ny - 1; lo[3][2] = 0; hi[3][2] = nz - 1;
+  }
+  if (std::fabs(Y[0] - ymin) < dy && !(symmetry == 2 && std::fabs(ymin) < dy / 2.0)) {
+    lo[4][1] = hi[4][1] = 0; lo[4][0] = 0; hi[4][0] = nx - 1; lo[4][2] = 0; hi[4][2] = nz - 1;
+  }
+  if (std::fabs(Z[0] - zmin) < dz && !(symmetry > 0 && std::fabs(zmin) < dz / 2.0)) {
+    lo[5][2] = hi[5][2] = 0; lo[5][0] = 0; hi[5][0] = nx - 1; lo[5][1] = 0; hi[5][1] = ny - 1;
+  }
+
+  for (int face = 0; face < 6; ++face)
+    if (hi[face][0] >= 0)
+      for (int k = lo[face][2]; k <= hi[face][2]; ++k)
+        for (int j = lo[face][1]; j <= hi[face][1]; ++j)
+          for (int i = lo[face][0]; i <= hi[face][0]; ++i) {
+            const double R = std::sqrt(X[i] * X[i] + Y[j] * Y[j] + Z[k] * Z[k]);
+            for (int b = 0; b < nv; ++b) {
+              const double wx = velocity[b] * X[i] / R;
+              const double wy = velocity[b] * Y[j] / R;
+              const double wz = velocity[b] * Z[k] / R;
+              const double *src = f0[b];
+              double *dst = f_rhs[b];
+              const int q = i + j * nx + k * nx * ny;
+              const double c = src[q];
+              double fx = 0.0, fy = 0.0, fz = 0.0;
+
+              if (wx > 0.0) {
+                if (i - 2 >= 0) fx = d2x * (3.0 * c - 4.0 * src[q - 1] + src[q - 2]);
+                else if (i - 1 >= 0) fx = d2x * (-src[q - 1] + src[q + 1]);
+                else fx = d2x * (-src[q + 2] + 4.0 * src[q + 1] - 3.0 * c);
+              } else if (wx < 0.0) {
+                if (i + 2 < nx) fx = d2x * (-src[q + 2] + 4.0 * src[q + 1] - 3.0 * c);
+                else if (i + 1 < nx) fx = d2x * (-src[q - 1] + src[q + 1]);
+                else fx = d2x * (3.0 * c - 4.0 * src[q - 1] + src[q - 2]);
+              }
+              if (wy > 0.0) {
+                if (j - 2 >= 0) fy = d2y * (3.0 * c - 4.0 * src[q - nx] + src[q - 2 * nx]);
+                else if (j - 1 >= 0) fy = d2y * (-src[q - nx] + src[q + nx]);
+                else fy = d2y * (-src[q + 2 * nx] + 4.0 * src[q + nx] - 3.0 * c);
+              } else if (wy < 0.0) {
+                if (j + 2 < ny) fy = d2y * (-src[q + 2 * nx] + 4.0 * src[q + nx] - 3.0 * c);
+                else if (j + 1 < ny) fy = d2y * (-src[q - nx] + src[q + nx]);
+                else fy = d2y * (3.0 * c - 4.0 * src[q - nx] + src[q - 2 * nx]);
+              }
+              if (wz > 0.0) {
+                if (k - 2 >= kmin) fz = d2z * (3.0 * c - 4.0 * amss_sommerfeld_zread(src, i, j, k - 1, nx, ny, soaz[b]) + amss_sommerfeld_zread(src, i, j, k - 2, nx, ny, soaz[b]));
+                else if (k - 1 >= kmin) fz = d2z * (-amss_sommerfeld_zread(src, i, j, k - 1, nx, ny, soaz[b]) + amss_sommerfeld_zread(src, i, j, k + 1, nx, ny, soaz[b]));
+                else fz = d2z * (-amss_sommerfeld_zread(src, i, j, k + 2, nx, ny, soaz[b]) + 4.0 * amss_sommerfeld_zread(src, i, j, k + 1, nx, ny, soaz[b]) - 3.0 * c);
+              } else if (wz < 0.0) {
+                if (k + 2 < nz) fz = d2z * (-amss_sommerfeld_zread(src, i, j, k + 2, nx, ny, soaz[b]) + 4.0 * amss_sommerfeld_zread(src, i, j, k + 1, nx, ny, soaz[b]) - 3.0 * c);
+                else if (k + 1 < nz) fz = d2z * (-amss_sommerfeld_zread(src, i, j, k - 1, nx, ny, soaz[b]) + amss_sommerfeld_zread(src, i, j, k + 1, nx, ny, soaz[b]));
+                else fz = d2z * (3.0 * c - 4.0 * amss_sommerfeld_zread(src, i, j, k - 1, nx, ny, soaz[b]) + amss_sommerfeld_zread(src, i, j, k - 2, nx, ny, soaz[b]));
+              }
+              dst[q] = -velocity[b] * (fx * X[i] + fy * Y[j] + fz * Z[k] + c) / R;
+            }
+          }
+}
+
+static void amss_sommerfeld_routbam_batch_lists(
+    Block *cg, Patch *patch, MyList<var> *f0L, MyList<var> *rhsL, int symmetry)
+{
+  double *bat_rhs[32], *bat_f0[32], bat_vel[32], bat_soaz[32];
+  int nbat = 0;
+  MyList<var> *f0 = f0L, *rhs = rhsL;
+  while (f0 && rhs && nbat < 32) {
+    bat_rhs[nbat] = cg->fgfs[rhs->data->sgfn];
+    bat_f0[nbat] = cg->fgfs[f0->data->sgfn];
+    bat_vel[nbat] = f0->data->propspeed;
+    bat_soaz[nbat] = f0->data->SoA[2];
+    ++nbat; f0 = f0->next; rhs = rhs->next;
+  }
+  amss_sommerfeld_routbam_batch(
+      cg->shape, cg->X[0], cg->X[1], cg->X[2],
+      patch->bbox[0], patch->bbox[1], patch->bbox[2],
+      patch->bbox[3], patch->bbox[4], patch->bbox[5],
+      bat_rhs, bat_f0, bat_vel, bat_soaz, nbat, symmetry);
+}
+#endif
+
+#ifdef AMSS_RK4_BATCHED
+// A conservative RK4 candidate: keep the same per-field arithmetic, but
+// process a small spatial tile before moving to the next tile.  The helper is
+// intentionally CPU-only and remains behind an experiment switch because the
+// extra tile loops may or may not beat the existing whole-array Fortran pass.
+static void amss_rk4_tiled(Block *cg, MyList<var> *f0L, MyList<var> *f1L,
+                           MyList<var> *rhsL, double dT, int rk4,
+                           double lower_bound)
+{
+  double *f0[32], *f1[32], *rhs[32];
+  int nf = 0;
+  MyList<var> *a = f0L, *b = f1L, *r = rhsL;
+  while (a && b && r) {
+    if (nf >= 32) MPI_Abort(MPI_COMM_WORLD, 1);
+    f0[nf] = cg->fgfs[a->data->sgfn];
+    f1[nf] = cg->fgfs[b->data->sgfn];
+    rhs[nf] = cg->fgfs[r->data->sgfn];
+    ++nf;
+    a = a->next; b = b->next; r = r->next;
+  }
+  if (a || b || r) MPI_Abort(MPI_COMM_WORLD, 1);
+
+  const int nx = cg->shape[0], ny = cg->shape[1], nz = cg->shape[2];
+  const int TI = 64, TJ = 4, TK = 1;
+  const double half = 0.5, two = 2.0, sixth = 1.0 / 6.0;
+  for (int k0 = 0; k0 < nz; k0 += TK)
+    for (int j0 = 0; j0 < ny; j0 += TJ)
+      for (int i0 = 0; i0 < nx; i0 += TI)
+        for (int field = 0; field < nf; ++field) {
+          double *p0 = f0[field], *p1 = f1[field], *pr = rhs[field];
+          for (int k = k0; k < Mymin(k0 + TK, nz); ++k)
+            for (int j = j0; j < Mymin(j0 + TJ, ny); ++j) {
+              const int base = j * nx + k * nx * ny;
+              for (int i = i0; i < Mymin(i0 + TI, nx); ++i) {
+                const int q = base + i;
+                if (rk4 == 0) {
+                  p1[q] = p0[q] + half * dT * pr[q];
+                } else if (rk4 == 1) {
+                  pr[q] += two * p1[q];
+                  p1[q] = p0[q] + half * dT * p1[q];
+                } else if (rk4 == 2) {
+                  pr[q] += two * p1[q];
+                  p1[q] = p0[q] + dT * p1[q];
+                } else if (rk4 == 3) {
+                  p1[q] = p0[q] + sixth * dT * (p1[q] + pr[q]);
+                } else {
+                  MPI_Abort(MPI_COMM_WORLD, 1);
+                }
+#ifdef AMSS_RK4_FUSE_LOWERBOUND
+                if (field == 0 && p1[q] < lower_bound) p1[q] = lower_bound;
+#endif
+              }
+            }
+        }
+}
+#endif
+
 //================================================================================================
 
 // define bssn_class
@@ -1959,25 +2145,106 @@ void bssn_class::Step(int lev, int YN)
           ERROR = 1;
         }
 
+#ifdef AMSS_RK4_BATCHED
+        {
+          MyList<var> *varl0 = StateList, *varlrhs = RHSList;
+          while (varl0)
+          {
+#ifdef AMSS_SOMMERFELD_BATCHED
+            if (lev == 0 && Symmetry <= 1 && varl0 == StateList) {
+              double *bat_rhs[32], *bat_f0[32], bat_vel[32], bat_soaz[32];
+              int nbat = 0;
+              MyList<var> *bs0 = StateList, *bsr = RHSList;
+              while (bs0 && bsr && nbat < 32) {
+                bat_rhs[nbat] = cg->fgfs[bsr->data->sgfn];
+                bat_f0[nbat] = cg->fgfs[bs0->data->sgfn];
+                bat_vel[nbat] = bs0->data->propspeed;
+                bat_soaz[nbat] = bs0->data->SoA[2];
+                ++nbat; bs0 = bs0->next; bsr = bsr->next;
+              }
+              amss_sommerfeld_routbam_batch(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                            Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                            Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                            bat_rhs, bat_f0, bat_vel, bat_soaz, nbat, Symmetry);
+            } else if (lev == 0) {
+              f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                   Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                   Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                   cg->fgfs[varlrhs->data->sgfn],
+                                   cg->fgfs[varl0->data->sgfn],
+                                   varl0->data->propspeed, varl0->data->SoA,
+                                   Symmetry);
+            }
+#else
+            if (lev == 0)
+              f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                   Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                   Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                   cg->fgfs[varlrhs->data->sgfn],
+                                   cg->fgfs[varl0->data->sgfn],
+                                   varl0->data->propspeed, varl0->data->SoA,
+                                   Symmetry);
+#endif
+            varl0 = varl0->next;
+            varlrhs = varlrhs->next;
+          }
+          amss_rk4_tiled(cg, StateList, SynchList_pre, RHSList,
+                         dT_lev, iter_count, chitiny);
+          if (lev > 0)
+          {
+            varl0 = StateList;
+            MyList<var> *varl = SynchList_pre;
+            while (varl0)
+            {
+              f_sommerfeld_rout(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                dT_lev, cg->fgfs[phi0->sgfn], cg->fgfs[Lap0->sgfn],
+                                cg->fgfs[varl0->data->sgfn], cg->fgfs[varl->data->sgfn],
+                                varl0->data->SoA, Symmetry, cor);
+              varl0 = varl0->next;
+              varl = varl->next;
+            }
+          }
+        }
+#else
         // rk4 substep and boundary
         {
           MyList<var> *varl0 = StateList, *varl = SynchList_pre, *varlrhs = RHSList; // we do not check the correspondence here
           while (varl0)
           {
-            if (lev == 0) // sommerfeld indeed
+#ifdef AMSS_SOMMERFELD_BATCHED
+            if (lev == 0 && Symmetry <= 1 && varl0 == StateList)
+              amss_sommerfeld_routbam_batch_lists(cg, Pp->data, StateList, RHSList, Symmetry);
+            else if (lev == 0)
               f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
-                                   Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2], 
+                                   Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
                                    Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
-                                   cg->fgfs[varlrhs->data->sgfn],
-                                   cg->fgfs[varl0->data->sgfn], 
-                                   varl0->data->propspeed, varl0->data->SoA,
-                                   Symmetry);
+                                   cg->fgfs[varlrhs->data->sgfn], cg->fgfs[varl0->data->sgfn],
+                                   varl0->data->propspeed, varl0->data->SoA, Symmetry);
+#else
+            if (lev == 0)
+              f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                   Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                   Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                   cg->fgfs[varlrhs->data->sgfn], cg->fgfs[varl0->data->sgfn],
+                                   varl0->data->propspeed, varl0->data->SoA, Symmetry);
+#endif
 
-            f_rungekutta4_rout(cg->shape, dT_lev, 
-                               cg->fgfs[varl0->data->sgfn], 
-                               cg->fgfs[varl->data->sgfn], 
-                               cg->fgfs[varlrhs->data->sgfn],
-                               iter_count);
+#ifdef AMSS_RK4_FUSE_LOWERBOUND
+            if (varl0 == StateList)
+              f_rungekutta4_rout_lowerbound(cg->shape, dT_lev,
+                                            cg->fgfs[varl0->data->sgfn],
+                                            cg->fgfs[varl->data->sgfn],
+                                            cg->fgfs[varlrhs->data->sgfn],
+                                            iter_count, chitiny);
+            else
+#endif
+              f_rungekutta4_rout(cg->shape, dT_lev,
+                                 cg->fgfs[varl0->data->sgfn],
+                                 cg->fgfs[varl->data->sgfn],
+                                 cg->fgfs[varlrhs->data->sgfn],
+                                 iter_count);
             if (lev > 0) // fix BD point
               f_sommerfeld_rout(cg->shape, cg->X[0], cg->X[1], cg->X[2],
                                 Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2], 
@@ -1995,7 +2262,10 @@ void bssn_class::Step(int lev, int YN)
             varlrhs = varlrhs->next;
           }
         }
+#endif
+#ifndef AMSS_RK4_FUSE_LOWERBOUND
         f_lowerboundset(cg->shape, cg->fgfs[phi->sgfn], chitiny);
+#endif
       }
       if (BP == Pp->data->ble)
         break;
@@ -2084,23 +2354,88 @@ void bssn_class::Step(int lev, int YN)
                  << cg->bbox[2] << ":" << cg->bbox[5] << ")" << endl;
             ERROR = 1;
           }
+#ifdef AMSS_RK4_BATCHED
+          {
+            MyList<var> *varl0 = StateList, *varl = SynchList_pre, *varlrhs = RHSList;
+            while (varl0)
+            {
+#ifdef AMSS_SOMMERFELD_BATCHED
+              if (lev == 0 && Symmetry <= 1 && varl0 == StateList)
+                amss_sommerfeld_routbam_batch_lists(cg, Pp->data, SynchList_pre, SynchList_cor, Symmetry);
+              else if (lev == 0)
+                f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                     Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                     Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                     cg->fgfs[varlrhs->data->sgfn], cg->fgfs[varl->data->sgfn],
+                                     varl0->data->propspeed, varl0->data->SoA, Symmetry);
+#else
+              if (lev == 0)
+                f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                     Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                     Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                     cg->fgfs[varlrhs->data->sgfn], cg->fgfs[varl->data->sgfn],
+                                     varl0->data->propspeed, varl0->data->SoA, Symmetry);
+#endif
+              varl0 = varl0->next;
+              varl = varl->next;
+              varlrhs = varlrhs->next;
+            }
+            amss_rk4_tiled(cg, StateList, SynchList_cor, RHSList,
+                           dT_lev, iter_count, chitiny);
+            if (lev > 0)
+            {
+              varl0 = StateList;
+              varl = SynchList_cor;
+              while (varl0)
+              {
+                f_sommerfeld_rout(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                  Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                  Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                  dT_lev, cg->fgfs[phi0->sgfn], cg->fgfs[Lap0->sgfn],
+                                  cg->fgfs[varl0->data->sgfn], cg->fgfs[varl->data->sgfn],
+                                  varl0->data->SoA, Symmetry, cor);
+                varl0 = varl0->next;
+                varl = varl->next;
+              }
+            }
+          }
+#else
           // rk4 substep and boundary
           {
             MyList<var> *varl0 = StateList, *varl = SynchList_pre, *varl1 = SynchList_cor, *varlrhs = RHSList; // we do not check the correspondence here
             while (varl0)
             {
-              if (lev == 0) // sommerfeld indeed
+#ifdef AMSS_SOMMERFELD_BATCHED
+              if (lev == 0 && Symmetry <= 1 && varl0 == StateList)
+                amss_sommerfeld_routbam_batch_lists(cg, Pp->data, SynchList_pre, SynchList_cor, Symmetry);
+              else if (lev == 0)
                 f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
-                                     Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2], 
+                                     Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
                                      Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
-                                     cg->fgfs[varl1->data->sgfn],
-                                     cg->fgfs[varl->data->sgfn], varl0->data->propspeed, varl0->data->SoA,
-                                     Symmetry);
-              f_rungekutta4_rout(cg->shape, dT_lev, 
-                                 cg->fgfs[varl0->data->sgfn], 
-                                 cg->fgfs[varl1->data->sgfn], 
-                                 cg->fgfs[varlrhs->data->sgfn],
-                                 iter_count);
+                                     cg->fgfs[varl1->data->sgfn], cg->fgfs[varl->data->sgfn],
+                                     varl0->data->propspeed, varl0->data->SoA, Symmetry);
+#else
+              if (lev == 0)
+                f_sommerfeld_routbam(cg->shape, cg->X[0], cg->X[1], cg->X[2],
+                                     Pp->data->bbox[0], Pp->data->bbox[1], Pp->data->bbox[2],
+                                     Pp->data->bbox[3], Pp->data->bbox[4], Pp->data->bbox[5],
+                                     cg->fgfs[varl1->data->sgfn], cg->fgfs[varl->data->sgfn],
+                                     varl0->data->propspeed, varl0->data->SoA, Symmetry);
+#endif
+#ifdef AMSS_RK4_FUSE_LOWERBOUND
+              if (varl0 == StateList)
+                f_rungekutta4_rout_lowerbound(cg->shape, dT_lev,
+                                              cg->fgfs[varl0->data->sgfn],
+                                              cg->fgfs[varl1->data->sgfn],
+                                              cg->fgfs[varlrhs->data->sgfn],
+                                              iter_count, chitiny);
+              else
+#endif
+                f_rungekutta4_rout(cg->shape, dT_lev,
+                                   cg->fgfs[varl0->data->sgfn],
+                                   cg->fgfs[varl1->data->sgfn],
+                                   cg->fgfs[varlrhs->data->sgfn],
+                                   iter_count);
 
               if (lev > 0) // fix BD point
                 f_sommerfeld_rout(cg->shape, cg->X[0], cg->X[1], cg->X[2],
@@ -2120,7 +2455,10 @@ void bssn_class::Step(int lev, int YN)
               varlrhs = varlrhs->next;
             }
           }
+#endif
+#ifndef AMSS_RK4_FUSE_LOWERBOUND
           f_lowerboundset(cg->shape, cg->fgfs[phi1->sgfn], chitiny);
+#endif
         }
         if (BP == Pp->data->ble)
           break;

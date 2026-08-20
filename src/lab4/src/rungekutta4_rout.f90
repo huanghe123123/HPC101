@@ -137,6 +137,49 @@
   return   
 
   end subroutine rungekutta4_rout
+
+! RK4 update for the conformal factor with its positivity floor fused into
+! the same point loop.  This avoids a second full-block WHERE pass after the
+! per-field RK update in the CPU BSSN path.
+  subroutine rungekutta4_rout_lowerbound(ex,dT,f0,f1,f_rhs,RK4,TINNY)
+  implicit none
+
+  integer, intent(in) :: ex(1:3), RK4
+  real*8, intent(in) :: dT, TINNY
+  real*8, dimension(ex(1),ex(2),ex(3)), intent(in) :: f0
+  real*8, dimension(ex(1),ex(2),ex(3)), intent(inout) :: f1, f_rhs
+  integer :: i,j,k
+  real*8, parameter :: F1o6=1.d0/6.d0, HLF=5.d-1, TWO=2.d0
+
+  if (RK4 == 0) then
+    do k=1,ex(3); do j=1,ex(2); do i=1,ex(1)
+      f1(i,j,k) = f0(i,j,k) + HLF*dT*f_rhs(i,j,k)
+      if (f1(i,j,k) < TINNY) f1(i,j,k) = TINNY
+    end do; end do; end do
+  elseif (RK4 == 1) then
+    do k=1,ex(3); do j=1,ex(2); do i=1,ex(1)
+      f_rhs(i,j,k) = f_rhs(i,j,k) + TWO*f1(i,j,k)
+      f1(i,j,k) = f0(i,j,k) + HLF*dT*f1(i,j,k)
+      if (f1(i,j,k) < TINNY) f1(i,j,k) = TINNY
+    end do; end do; end do
+  elseif (RK4 == 2) then
+    do k=1,ex(3); do j=1,ex(2); do i=1,ex(1)
+      f_rhs(i,j,k) = f_rhs(i,j,k) + TWO*f1(i,j,k)
+      f1(i,j,k) = f0(i,j,k) + dT*f1(i,j,k)
+      if (f1(i,j,k) < TINNY) f1(i,j,k) = TINNY
+    end do; end do; end do
+  elseif (RK4 == 3) then
+    do k=1,ex(3); do j=1,ex(2); do i=1,ex(1)
+      f1(i,j,k) = f0(i,j,k) + F1o6*dT*(f1(i,j,k)+f_rhs(i,j,k))
+      if (f1(i,j,k) < TINNY) f1(i,j,k) = TINNY
+    end do; end do; end do
+  else
+    write(*,*) "rungekutta4_rout_lowerbound: bad RK4 counting!!"
+    stop
+  endif
+
+  return
+  end subroutine rungekutta4_rout_lowerbound
 !-----------------------------------------------------------------------------
 ! icn for scalar
   subroutine icn_scalar(dT,f0,f1,f_rhs,RK4)

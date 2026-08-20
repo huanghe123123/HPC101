@@ -11,12 +11,21 @@ using namespace std;
 #include "Block.h"
 #include "misc.h"
 
+#ifdef AMSS_FGFS_HUGEPAGE_SLAB
+#include <cerrno>
+#include <cstring>
+#include <sys/mman.h>
+#endif
+
 Block::Block(int DIM, int *shapei, double *bboxi, int ranki, int ingfsi, int fngfsi, int levi, const int cgpui) : rank(ranki), ingfs(ingfsi), fngfs(fngfsi), lev(levi), cgpu(cgpui)
 {
 	for (int i = 0; i < dim; i++)
 		X[i] = 0;
 #ifdef AMSS_FGFS_COLORED_SLAB
 	fgfs_base = 0;
+#endif
+#ifdef AMSS_FGFS_HUGEPAGE_SLAB
+	fgfs_slab = 0;
 #endif
 
 	if (DIM != dim)
@@ -88,6 +97,61 @@ Block::Block(int DIM, int *shapei, double *bboxi, int ranki, int ingfsi, int fng
 			fgfs[i] = fgfs_base[i] + (static_cast<size_t>(i) % color_lines) * 8u;
 			memset(fgfs[i], 0, sizeof(double) * nn);
 		}
+		#elif defined(AMSS_FGFS_HUGEPAGE_SLAB)
+		// Single contiguous 2 MiB-aligned allocation holding all fngfs fields.
+		// Backed by transparent huge pages (MADV_HUGEPAGE) so 167 small
+		// per-field arrays collapse into a few 2 MiB pages instead of tens of
+		// thousands of 4 KiB pages, reducing dTLB misses and page-table walks
+		// for the streaming RHS/RK4/memcpy sweeps over fgfs.
+		//
+		// fgfs[i] is a view: fgfs_slab + i*nn.  swapList() swaps the views
+		// only (fgfs[] entries); the slab owns the memory and is freed once
+		// in ~Block.  ABI is unchanged — Fortran/C callers see the same
+		// contiguous double arrays as the legacy malloc-per-field path.
+		{
+			const size_t field_bytes = sizeof(double) * static_cast<size_t>(nn);
+			// Align each field view to 2 MiB so huge pages can back them and so
+			// fgfs[i] never straddles a page boundary in the per-field view.
+			const size_t two_mb = size_t(2) * 1024 * 1024;
+			const size_t field_stride = (field_bytes + two_mb - 1) & ~(two_mb - 1);
+			// Total slab = last field's base + its bytes; round the whole slab
+			// up to a 2 MiB multiple so madvise covers full huge pages.
+			const size_t slab_bytes =
+				((static_cast<size_t>(fngfs) - 1) * field_stride + field_bytes + two_mb - 1)
+				& ~(two_mb - 1);
+
+			void *raw = 0;
+			// posix_memalign to 2 MiB guarantees both the base and every
+			// field_stride-aligned view lands on a 2 MiB boundary.
+			errno = 0;
+			if (posix_memalign(&raw, two_mb, slab_bytes) != 0 || !raw)
+			{
+				cout << "on node#" << rank
+				     << ", out of memory when constructing hugepage-slab Block ("
+				     << (slab_bytes >> 20) << " MiB, fngfs=" << fngfs
+				     << ", nn=" << nn << "): " << strerror(errno) << endl;
+				MPI_Abort(MPI_COMM_WORLD, 1);
+			}
+			fgfs_slab = static_cast<double *>(raw);
+			// Advise the kernel to back the slab with 2 MiB transparent huge
+			// pages.  On non-Linux or if huge pages are unavailable this is a
+			// no-op / returns EINVAL; the slab still works as ordinary pages.
+#ifdef __linux__
+			errno = 0;
+			if (madvise(fgfs_slab, slab_bytes, MADV_HUGEPAGE) != 0)
+			{
+				// Non-fatal: fall back to base pages.  Log once on rank 0.
+				int myrank0 = 0;
+				MPI_Comm_rank(MPI_COMM_WORLD, &myrank0);
+				if (myrank0 == 0)
+					cout << "Block hugepage-slab: madvise(MADV_HUGEPAGE) failed ("
+					     << strerror(errno) << "); continuing on base pages." << endl;
+			}
+#endif
+			memset(fgfs_slab, 0, slab_bytes);
+			for (int i = 0; i < fngfs; i++)
+				fgfs[i] = fgfs_slab + (static_cast<size_t>(i) * field_stride) / sizeof(double);
+		}
 		#else
 		for (int i = 0; i < fngfs; i++) {
 			fgfs[i] = (double *)malloc(sizeof(double) * nn);
@@ -97,15 +161,11 @@ Block::Block(int DIM, int *shapei, double *bboxi, int ranki, int ingfsi, int fng
 				MPI_Abort(MPI_COMM_WORLD, 1);
 			}
 			memset(fgfs[i], 0, sizeof(double) * nn);
-		#endif
-
 #ifdef USE_GPU
 			d_fgfs[i] = GPUManager::getInstance().allocate_device_memory(nn);
-
 			cpu_valid[i] = true;
 			gpu_valid[i] = false;
 #endif
-		#ifndef AMSS_FGFS_COLORED_SLAB
 		}
 		#endif
 
@@ -141,17 +201,20 @@ Block::~Block()
 		for (int i = 0; i < ingfs; i++)
 			free(igfs[i]);
 		delete[] igfs;
-		#ifndef AMSS_FGFS_COLORED_SLAB
+		#if defined(AMSS_FGFS_COLORED_SLAB)
+		for (int i = 0; i < fngfs; i++)
+			free(fgfs_base[i]);
+		delete[] fgfs_base;
+		#elif defined(AMSS_FGFS_HUGEPAGE_SLAB)
+		// The slab owns all fngfs fields; free once.  fgfs[i] are views into it.
+		free(fgfs_slab);
+		#else
 		for (int i = 0; i < fngfs; i ++) {
 			free(fgfs[i]);
 #ifdef USE_GPU
 			GPUManager::getInstance().free_device_memory(d_fgfs[i], nn);
 #endif
 		}
-		#else
-		for (int i = 0; i < fngfs; i++)
-			free(fgfs_base[i]);
-		delete[] fgfs_base;
 		#endif
 		delete[] fgfs;
 #ifdef USE_GPU
@@ -162,6 +225,9 @@ Block::~Block()
 		fgfs = 0;
 #ifdef AMSS_FGFS_COLORED_SLAB
 		fgfs_base = 0;
+#endif
+#ifdef AMSS_FGFS_HUGEPAGE_SLAB
+		fgfs_slab = 0;
 #endif
 #ifdef USE_GPU
 		d_fgfs = 0;

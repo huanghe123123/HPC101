@@ -95,27 +95,23 @@ subroutine lopsided(ex,X,Y,Z,f,f_rhs,Sfx,Sfy,Sfz,Symmetry,SoA)
     klo = 1
     khi = ex(3)-1
 #define FVAL(i,j,k) halo_get(i,j,k)
-    !$omp parallel do
 #include "lopsided_loop.fh"
 #undef FVAL
   else if (halo_active) then
     klo = 1
     khi = min(3, ex(3)-1)
 #define FVAL(i,j,k) halo_get(i,j,k)
-    !$omp parallel do
 #include "lopsided_loop.fh"
 #undef FVAL
     klo = 4
     khi = ex(3)-1
 #define FVAL(i,j,k) f(i,j,k)
-    !$omp parallel do
 #include "lopsided_loop.fh"
 #undef FVAL
   else
     klo = 1
     khi = ex(3)-1
 #define FVAL(i,j,k) f(i,j,k)
-    !$omp parallel do
 #include "lopsided_loop.fh"
 #undef FVAL
   end if
@@ -123,7 +119,6 @@ subroutine lopsided(ex,X,Y,Z,f,f_rhs,Sfx,Sfy,Sfz,Symmetry,SoA)
   klo = 1
   khi = ex(3)-1
 #define FVAL(i,j,k) fh(i,j,k)
-    !$omp parallel do
 #include "lopsided_loop.fh"
 #undef FVAL
 #endif

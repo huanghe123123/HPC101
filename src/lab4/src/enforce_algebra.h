@@ -13,6 +13,7 @@
 #ifdef fortran3
 #define f_enforce_ag enforce_ag_
 #define f_enforce_ga enforce_ga_
+#define f_enforce_ga_pointwise enforce_ga_pointwise_
 #endif
 
 extern "C"
@@ -26,6 +27,12 @@ extern "C"
 	void f_enforce_ga(int *,
 					  double *, double *, double *, double *, double *, double *,
 					  double *, double *, double *, double *, double *, double *);
+}
+extern "C"
+{
+	void f_enforce_ga_pointwise(int *,
+								 double *, double *, double *, double *, double *, double *,
+								 double *, double *, double *, double *, double *, double *);
 }
 
 #ifdef USE_GPU

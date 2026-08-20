@@ -1047,8 +1047,10 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
 !   gxxx_t..gzzz_t : 3rd generation, first-kind connection (lines 344-363)
 !   gxxx2_s,gxxy2_s,gxxz2_s : chi-connection vector (lines 620-622)
 !
-! Arrays still stored from the loop (read by the final if(co==0) block and
+! Arrays stored from the loop (read by the final if(co==0) block and
 ! by lopsided): gupxx..gupzz, Rxx..Rzz, Gamxxx..Gamzzz, gxx,gyy,gzz, chin1.
+! With AMSS_RHS_SKIP_CONSTRAINT_STORES, the first three groups are written
+! only for co==0; their scalar values are still used by the co==1 RHS.
 !=====================================================================
 
   function compute_rhs_bssn_fused(ex, T,X, Y, Z,                                     &
@@ -1075,6 +1077,11 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
 ! calculate constraint violation when co=0
 #ifdef AMSS_RHS_POINTWISE
   use point_derivs
+#endif
+#ifdef AMSS_RHS_OMP_ASSEMBLY
+! omp_get_max_threads() in the parallel-do if() clause needs an explicit
+! declaration under implicit none; omp_lib provides it (linked via -fopenmp).
+  use omp_lib
 #endif
 #ifdef AMSS_RHS_WORKSPACE_POOL
   use rhs_legacy_buffers, only: legacy_ws, rhs_legacy_ensure
@@ -1122,6 +1129,11 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
   integer::gont
 #ifdef AMSS_RHS_POINTWISE
   logical :: pointwise_mode
+#endif
+#ifdef AMSS_BATCH_STENCIL
+#ifdef AMSS_RHS_RAW_DIAG_LOPSIDED
+  logical :: raw_diag_lopsided
+#endif
 #endif
 
 !~~~~~~> Other variables:
@@ -1387,10 +1399,36 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
 
 ! whole-array inits needed after the loop (lopsided reads gxx,gyy,gzz;
 ! final if(co==0) block reads chin1). alpn1 is loop-scalar only in fused.
+#ifdef AMSS_BATCH_STENCIL
+#ifdef AMSS_RHS_RAW_DIAG_LOPSIDED
+  raw_diag_lopsided = .false.
+  if (bs_enabled() .and. Symmetry <= 1) raw_diag_lopsided = .true.
+#endif
+#endif
+#ifdef AMSS_RHS_SKIP_CHIN1_SCAN
+  if (co == 0) then
+    chin1 = chi + ONE
+  end if
+#else
   chin1 = chi + ONE
+#endif
+#ifdef AMSS_BATCH_STENCIL
+#ifdef AMSS_RHS_RAW_DIAG_LOPSIDED
+  if (.not. raw_diag_lopsided) then
+    gxx = dxx + ONE
+    gyy = dyy + ONE
+    gzz = dzz + ONE
+  end if
+#else
   gxx = dxx + ONE
   gyy = dyy + ONE
   gzz = dzz + ONE
+#endif
+#else
+  gxx = dxx + ONE
+  gyy = dyy + ONE
+  gzz = dzz + ONE
+#endif
 
 !~~~~~~> all stencil calls hoisted before the fused loop (original order,
 !         same input->output mapping as the original)
@@ -1457,6 +1495,48 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
       do k = kb, kend
         do j = jb, jend
 #else
+#ifdef AMSS_RHS_OMP_ASSEMBLY
+! Parallelize the POINTWISE co==1 evolution hot path over k/j.  The if() clause
+! keeps the loop serial when OMP=1 (no team overhead) and when pointwise_mode is
+! false (co==0 constraint / octant), where the body takes the legacy full-array
+! branches that read shared hoisted stencils.  Only the pw_*/_s per-point
+! scalars are private; arrays and loop-invariant coefficients stay shared.
+!$omp parallel do collapse(2) schedule(static) &
+!$omp if(omp_get_max_threads() > 1 .and. pointwise_mode) &
+!$omp private(alpn1_s, chin1_s, gxx_s, gyy_s, gzz_s, div_beta_s, &
+!$omp& gupdet_s, gupxx_s, gupxy_s, gupxz_s, gupyy_s, gupyz_s, &
+!$omp& gupzz_s, Gamxxx_s, Gamxxy_s, Gamxxz_s, Gamxyy_s, Gamxyz_s, &
+!$omp& Gamxzz_s, Gamyxx_s, Gamyxy_s, Gamyxz_s, Gamyyy_s, Gamyyz_s, &
+!$omp& Gamyzz_s, Gamzxx_s, Gamzxy_s, Gamzxz_s, Gamzyy_s, Gamzyz_s, &
+!$omp& Gamzzz_s, Rxx_s, Rxy_s, Rxz_s, Ryy_s, Ryz_s, &
+!$omp& Rzz_s, Gamx_rhs_s, Gamy_rhs_s, Gamz_rhs_s, trK_rhs_s, Axx_rhs_s, &
+!$omp& Axy_rhs_s, Axz_rhs_s, Ayy_rhs_s, Ayz_rhs_s, Azz_rhs_s, fxx_s, &
+!$omp& fxy_s, fxz_s, fyy_s, fyz_s, fzz_s, f_s, &
+!$omp& S_s, Gamxa_s, Gamya_s, Gamza_s, gxxx_t, gxyx_t, &
+!$omp& gxzx_t, gyyx_t, gyzx_t, gzzx_t, gxxy_t, gxyy_t, &
+!$omp& gxzy_t, gyyy_t, gyzy_t, gzzy_t, gxxz_t, gxyz_t, &
+!$omp& gxzz_t, gyyz_t, gyzz_t, gzzz_t, gxxx2_s, gxxy2_s, &
+!$omp& gxxz2_s, i, j, k, pw_order, pw_bxxx, &
+!$omp& pw_bxyx, pw_bxzx, pw_byyx, pw_byzx, pw_bzzx, pw_bxxy, &
+!$omp& pw_bxyy, pw_bxzy, pw_byyy, pw_byzy, pw_bzzy, pw_bxxz, &
+!$omp& pw_bxyz, pw_bxzz, pw_byyz, pw_byzz, pw_bzzz, pw_fxx_dxx, &
+!$omp& pw_fxy_dxx, pw_fxz_dxx, pw_fyy_dxx, pw_fyz_dxx, pw_fzz_dxx, pw_fxx_dyy, &
+!$omp& pw_fxy_dyy, pw_fxz_dyy, pw_fyy_dyy, pw_fyz_dyy, pw_fzz_dyy, pw_fxx_dzz, &
+!$omp& pw_fxy_dzz, pw_fxz_dzz, pw_fyy_dzz, pw_fyz_dzz, pw_fzz_dzz, pw_fxx_gxy, &
+!$omp& pw_fxy_gxy, pw_fxz_gxy, pw_fyy_gxy, pw_fyz_gxy, pw_fzz_gxy, pw_fxx_gxz, &
+!$omp& pw_fxy_gxz, pw_fxz_gxz, pw_fyy_gxz, pw_fyz_gxz, pw_fzz_gxz, pw_fxx_gyz, &
+!$omp& pw_fxy_gyz, pw_fxz_gyz, pw_fyy_gyz, pw_fyz_gyz, pw_fzz_gyz, pw_fxx_chi, &
+!$omp& pw_fxy_chi, pw_fxz_chi, pw_fyy_chi, pw_fyz_chi, pw_fzz_chi, pw_fxx_lap, &
+!$omp& pw_fxy_lap, pw_fxz_lap, pw_fyy_lap, pw_fyz_lap, pw_fzz_lap, pw_betaxx, &
+!$omp& pw_betaxy, pw_betaxz, pw_betayx, pw_betayy, pw_betayz, pw_betazx, &
+!$omp& pw_betazy, pw_betazz, pw_chix, pw_chiy, pw_chiz, pw_gxxx, &
+!$omp& pw_gxxy, pw_gxxz, pw_gxyx, pw_gxyy, pw_gxyz, pw_gxzx, &
+!$omp& pw_gxzy, pw_gxzz, pw_gyyx, pw_gyyy, pw_gyyz, pw_gyzx, &
+!$omp& pw_gyzy, pw_gyzz, pw_gzzx, pw_gzzy, pw_gzzz, pw_lapx, &
+!$omp& pw_lapy, pw_lapz, pw_kx, pw_ky, pw_kz, pw_gamxx, &
+!$omp& pw_gamxy, pw_gamxz, pw_gamyx, pw_gamyy, pw_gamyz, pw_gamzx, &
+!$omp& pw_gamzy, pw_gamzz)
+#endif
   do k = 1, ex(3)
     do j = 1, ex(2)
 #endif
@@ -2814,6 +2894,11 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
         Ayy_rhs(i,j,k) = Ayy_rhs_s
         Ayz_rhs(i,j,k) = Ayz_rhs_s
         Azz_rhs(i,j,k) = Azz_rhs_s
+#ifdef AMSS_RHS_SKIP_CONSTRAINT_STORES
+        ! These arrays are consumed only by the co=0 constraint block below.
+        ! The scalar values remain live for the evolution RHS in co=1.
+        if (co == 0) then
+#endif
         gupxx(i,j,k) = gupxx_s
         gupxy(i,j,k) = gupxy_s
         gupxz(i,j,k) = gupxz_s
@@ -2844,6 +2929,9 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
         Gamzyy(i,j,k) = Gamzyy_s
         Gamzyz(i,j,k) = Gamzyz_s
         Gamzzz(i,j,k) = Gamzzz_s
+#ifdef AMSS_RHS_SKIP_CONSTRAINT_STORES
+        end if
+#endif
 
       end do
     end do
@@ -2852,6 +2940,9 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
     end do
 #endif
   end do
+#ifdef AMSS_RHS_OMP_ASSEMBLY
+!$omp end parallel do
+#endif
 
 #ifdef AMSS_RHS_POINTWISE
 #undef betaxx
@@ -2941,12 +3032,38 @@ movz_Res = movz_Res - F2o3*Kz - F8*PI*sz
       real*8 :: ls3(24)
       integer :: lnv
       lnv = 0
+#ifdef AMSS_RHS_RAW_DIAG_LOPSIDED
+      if (raw_diag_lopsided) then
+        ! D(gxx)=D(dxx+1)=D(dxx); the lopsided coefficients sum to zero.
+        ! This removes three full-block auxiliary fields from the hot tail.
+        lnv = lnv+1; lfp(lnv)%p => dxx;  lfrp(lnv)%p => gxx_rhs;  ls3(lnv) = SYM
+      else
+        lnv = lnv+1; lfp(lnv)%p => gxx;  lfrp(lnv)%p => gxx_rhs;  ls3(lnv) = SYM
+      end if
+#else
       lnv = lnv+1; lfp(lnv)%p => gxx;  lfrp(lnv)%p => gxx_rhs;  ls3(lnv) = SYM
+#endif
       lnv = lnv+1; lfp(lnv)%p => gxy;  lfrp(lnv)%p => gxy_rhs;  ls3(lnv) = SYM
       lnv = lnv+1; lfp(lnv)%p => gxz;  lfrp(lnv)%p => gxz_rhs;  ls3(lnv) = ANTI
+#ifdef AMSS_RHS_RAW_DIAG_LOPSIDED
+      if (raw_diag_lopsided) then
+        lnv = lnv+1; lfp(lnv)%p => dyy;  lfrp(lnv)%p => gyy_rhs;  ls3(lnv) = SYM
+      else
+        lnv = lnv+1; lfp(lnv)%p => gyy;  lfrp(lnv)%p => gyy_rhs;  ls3(lnv) = SYM
+      end if
+#else
       lnv = lnv+1; lfp(lnv)%p => gyy;  lfrp(lnv)%p => gyy_rhs;  ls3(lnv) = SYM
+#endif
       lnv = lnv+1; lfp(lnv)%p => gyz;  lfrp(lnv)%p => gyz_rhs;  ls3(lnv) = ANTI
+#ifdef AMSS_RHS_RAW_DIAG_LOPSIDED
+      if (raw_diag_lopsided) then
+        lnv = lnv+1; lfp(lnv)%p => dzz;  lfrp(lnv)%p => gzz_rhs;  ls3(lnv) = SYM
+      else
+        lnv = lnv+1; lfp(lnv)%p => gzz;  lfrp(lnv)%p => gzz_rhs;  ls3(lnv) = SYM
+      end if
+#else
       lnv = lnv+1; lfp(lnv)%p => gzz;  lfrp(lnv)%p => gzz_rhs;  ls3(lnv) = SYM
+#endif
       lnv = lnv+1; lfp(lnv)%p => Axx;  lfrp(lnv)%p => Axx_rhs;  ls3(lnv) = SYM
       lnv = lnv+1; lfp(lnv)%p => Axy;  lfrp(lnv)%p => Axy_rhs;  ls3(lnv) = SYM
       lnv = lnv+1; lfp(lnv)%p => Axz;  lfrp(lnv)%p => Axz_rhs;  ls3(lnv) = ANTI

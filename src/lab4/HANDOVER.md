@@ -1,20 +1,25 @@
 # Lab4 工作交接文档
 
-> 最后更新：2026-08-19
+> 最后更新：2026-08-20
 > 项目：HPC101 实验四 AMSS-NCKU 数值相对论程序优化（CPU 任务一）
-> 当前有效代码基线：优化 #35（BSSN #26 + TwoPuncture #30–#35）
+> 当前有效代码基线：优化 #42（BSSN #26 + #37 + fast-math #41 + global_interp uniform6 #42 + TwoPuncture #30–#35）
 
 这份文件是继续工作前的唯一状态入口。它区分“当前有效代码”“已完成但被拒绝的实验”和“仍未测试的方向”，不能把历史实验配置当成当前可执行配置。
 
 ## 1. 当前结论
 
-- 当前有效最优是 #35（BSSN #26 + TwoPuncture #30–#35）：40 步 `This Program Cost=411.257s`，`Total Evolve=397.011s`，`Total Running=401.019s`，`FINAL: PASS`，匹配 golden 40/100 组，Trajectory RMS=4.05e-6%，Constraint level 0 Ham=0.27739668 全部 PASS。相对 #26 的668.825s，端到端下降约38.5%；TwoPuncture 固定块从约277s降到约8.5s。
+- 当前有效最优是 #42（BSSN #26 + #37 + fast-math #41 + global_interp uniform6 #42 + TwoPuncture #30–#35）：40 步 `This Program Cost=342.549s`，`Total Evolve=329.018s`，`Total Running=332.715s`，`FINAL: PASS`，匹配 golden 40/100 组，Trajectory RMS=4.05e-6%，Constraint 全部 PASS。相对 #37，端到端下降约15.0%、演化下降约15.8%。
 - 阶段一（#22–#25）40 步检查点 job 115838 为 `681.446s`、Evolve `381.533s`、`FINAL: PASS`；阶段二加入 #26 后的正式结果以 job 115969 为准。
 - #22/#23 消除发布 NaN 全扫描并让细层 predictor 走演化路径；#24 pooled 111 个 legacy workspace 数组；#25 编译掉真空物质数组加载；#26 融合 B=2 lopsided+KO 尾部扫描，全部通过短测并累计接受。
 - #14–#17 都已在集群完成 paired `perf stat`、`perf record` 和 4 步正确性检查；四项均通过数值检查，但都没有达到稳定的性能接受标准，因此全部回退。
 - #19（RHS 运算顺序重排）仍被拒绝；#27 简单 SIMD directive、#28 cache coloring、#29 j×k tile sweep 也已完成 paired 4 步实验但没有稳定收益，全部回退。#28 的首个 slab 实现曾 SIGSEGV，后改为独立 colored allocation 后正确性通过但性能仍回退。
-- 当前源码正式路径为 #35；TwoPuncture 使用连续 JFD、预计算谱/几何表、NRELAX=10 和30线程 OpenMP。OpenMP 初版曾因共享临时量 SIGSEGV，已修复并重新验证；未修复的旧二进制不得使用。
-- TwoPuncture 固定开销已不再是主导；下一步应回到 BSSN 演化、AMR 负载不均衡或 `polint`/分析路径。目标340s尚未达到，当前主要剩余成本是 `Total Evolve=397.011s`。
+- #38（fused RHS 主循环 hybrid OpenMP，`AMSS_RHS_OMP_ASSEMBLY`）正确性通过（private 列表完整：30×1 与 15×2 开关 ON vs OFF 均 bit-identical，无竞争），但性能负向被拒绝：30×1 ON 回退 +5%（超 ±0.5% 门），15×2 端到端慢 2.8×。阶段C SMT sweep（30×2/15×4/10×6/6×10）亦负向：30×2 比 #37 OFF 慢 3.3%（SMT 第二线程在 compute-bound 双精度 stencil 上无贡献，sibling 共享 L1/L2 无法掩盖 LLC miss），减 rank 配置慢 2.2–2.8×。hybrid MPI+OpenMP/SMT 方向整体放弃，开关默认 OFF，#37 不变。
+- #39（THP slab，`AMSS_FGFS_HUGEPAGE_SLAB`）正确性通过（RMS=0、constraint 逐位一致），但性能严重负向被拒绝：Total Evolve +50% 回退（38.54→57.83s）。根因是每字段对齐 2MiB 把工作集从 40–141MiB 撑到 334MiB/Block，L3 装不下；字段间隔 2MiB 空洞破坏原有空间局部性，预取失效。dTLB miss 未降（3.54%→3.50%），LLC miss rate 降是慢跑的假象（绝对数 +10%）。大页对工作集远大于 L3 的流式场景是负优化。开关默认 OFF，#37 不变。
+- #41（CPU ABE `-ffast-math`）通过正式 40 步：`Total Evolve=379.041s`、`Total Running=381.984s`、`This Program Cost=390.893s`、`FINAL: PASS`，相对 #37 端到端约快3.0%。它主要减少指令和 cycles，LLC miss 绝对数基本不变，因此不把它误判成访存优化；`AMSS_FAST_MATH` 已默认开启，TwoPuncture 和 GPU target 不受影响。
+- #42（`AMSS_POLINT_UNIFORM6`）将 `global_interp→polin3` 的固定 `ordn=6` 路径改为专用均匀网格 tensor-product Lagrange 核；AMR Restrict/Prolong、`interp_2` 和 Sommerfeld 仍保留通用 `polint/polin3`。4-step paired 中 `Total Evolve` 为 39.41/39.42→33.14/33.52s，两个版本均 `FINAL: PASS`；正式 40 步为 `Total Evolve=329.018s`、`This Program Cost=342.549s`、`FINAL: PASS`。`polint_` self 从9.05%降至0.14%，开关已默认开启。
+- 阶段一 miss 归因（诊断，不入成绩）：`perf record -e LLC-load-misses` 直接采样 miss 事件，推翻了 LLC/dTLB 计划阶段三的前提——LLC miss 最大来源是 `rungekutta4_rout_` 占 31.2%（whole-array triad，算法固有），不是 RHS（12.6%）+lopsided（10.9%）；dTLB 真实访存主源是 compute_rhs 占 28%（51% 是 opal 忙等假象）。RHS/lopsided 不是 LLC 主源，阶段三 derivative tile 暂缓。
+- 当前源码正式路径为 #42；TwoPuncture 使用连续 JFD、预计算谱/几何表、NRELAX=10 和30线程 OpenMP。OpenMP 初版曾因共享临时量 SIGSEGV，已修复并重新验证；未修复的旧二进制不得使用。
+- TwoPuncture 固定开销已不再是主导；`polint_` 已被 global_interp 专用核压低，当前主要剩余成本是 `Total Evolve=329.018s` 中的 RHS、batch stencil 和 AMR 层级等待。
 
 ## 2. 当前有效配置
 
@@ -42,6 +47,8 @@
 MPI=30
 OMP=1
 GPU=no
+AMSS_FAST_MATH=ON
+AMSS_POLINT_UNIFORM6=ON
 AMSS_TWOP_OPENMP=ON
 AMSS_TWOP_THREADS=30
 AMSS_TWOP_NRELAX=10
@@ -61,6 +68,9 @@ AMSS_RHS_WORKSPACE_POOL=ON
 AMSS_VACUUM_BSSN=ON
 AMSS_FUSED_RHS_TAIL=ON
 AMSS_RHS_BULK_SIMD=OFF
+AMSS_RHS_SKIP_CONSTRAINT_STORES=OFF
+AMSS_RHS_SKIP_CHIN1_SCAN=ON
+AMSS_RHS_RAW_DIAG_LOPSIDED=ON
 AMSS_FGFS_COLORED_SLAB=OFF
 AMSS_RHS_TILE_J=0
 AMSS_RHS_TILE_K=0
@@ -68,7 +78,7 @@ AMSS_RHS_TILE_K=0
 
 注意：仓库中的 `AMSS_NCKU_Input.py` 当前是 4.0 的 smoke 配置，具体为 `MPI_processes=30`、`OMP_threads=1`、`GPU_Calculation="no"`、`Final_Evolution_Time=4.0`。正式 40 步脚本会临时改写该值并在退出时恢复，不能把当前输入文件的 4.0 当作正式成绩。
 
-`CMakeLists.txt` 的默认值现在就是 CPU 正式路径（POINTWISE、B=2 batch、BSSN/TwoP OpenMP 和 #22–#26 开关均开启；GPU 仍默认关闭）。需要测试旧路径或负向候选时再显式传入覆盖开关：
+`CMakeLists.txt` 的默认值现在就是 CPU 正式路径（POINTWISE、B=2 batch、BSSN/TwoP OpenMP、#22–#26、#37、#41 和 #42 开关均开启；#36 保持关闭；GPU 仍默认关闭）。需要测试旧路径或负向候选时再显式传入覆盖开关：
 
 ```bash
 ./compile.sh -DAMSS_OPT="-O3" \
@@ -112,7 +122,11 @@ AMSS_RHS_TILE_K=0
 | #32 | TwoPuncture NRELAX=10 | 160.02→69.84s | — | paired +56.4%，PASS |
 | #33 | TwoPuncture 30线程 OpenMP | 69.88→8.47s | — | paired +87.9%，PASS |
 | #34 | TwoPuncture full 4步链路 | 318.001→51.786s | — | `FINAL: PASS`，RMS=1.03e-5% |
-| #35 | TwoPuncture正式40步 | — | 411.257s，演化397.011s | 当前正式最优，`FINAL: PASS` |
+| #35 | TwoPuncture正式40步 | — | 411.257s，演化397.011s | 历史基线，`FINAL: PASS` |
+| #36 | `co=1` 跳过约束专用中间数组写回 | 57.840→57.435s（-0.70%） | job 116964，4步 `FINAL: PASS` | miss指标改善但总时间未达1%，保留实验开关，拒绝默认开启 |
+| #37 | `chin1`/对角度规辅助扫描消除 | Total Evolve 两次约降1.32%/1.14% | job 120789，4步 `FINAL: PASS`；job 120900正式40步 `FINAL: PASS` | 接受，已被 #41/#42 叠加 |
+| #41 | CPU `-ffast-math` | 40.168→38.544s（-4.05%，paired） | job 123942：390.893s，演化379.041s，`FINAL: PASS` | 接受，默认开启 |
+| #42 | `global_interp` 固定 uniform6 `polin3` 核 | 39.41/39.42→33.14/33.52s（约-15%） | job 124023：342.549s，演化329.018s，`FINAL: PASS` | 接受，默认开启 |
 
 ## 3. #14–#17、#19 实验档案
 
@@ -182,7 +196,7 @@ AMSS_RHS_TILE_K=0
 
 - `compute_rhs_bssn_fused_` 仍是最大的应用计算内核（fused 循环约200s/40步，占演化过半）；TwoPuncture 已不再是当前主热点。
 - `kodis`、`lopsided` 已由 #18 批处理和 #26 尾部融合压缩；#27–#29 已证明简单 SIMD、字段 coloring、普通 j×k 重排没有稳定收益。
-- `polint_` 和插值辅助路径仍是分析/AMR 侧的重要热点。
+- `polint_` 已由 #42 的 `global_interp` uniform6 专用核压低；`polin3_uniform6_` 只占约0.14% self，剩余主要热点回到 `compute_rhs_bssn_fused_`、batch stencil 和 MPI 层级等待。
 - `libopen-pal` 的 `mca_btl_sm_poll_handle_frag`/`opal_progress` 是 MPI 共享内存轮询，不应直接等同于 BSSN 数组 LLC miss。
 
 ### 4.2 通信路径
@@ -277,9 +291,9 @@ hpc submit -p lab4 -c 60 -m 100Gi -t 30m -d \
 
 ## 7. 下一步建议
 
-#35（BSSN #26 + TwoPuncture #30–#35）已通过正式40步计时（job 116215，This Program Cost 411.257s，Evolve 397.011s，FINAL: PASS），是当前有效最优。TwoPuncture solver-only paired 由约277s降至8.47s；#27–#29 仍然拒绝。
+#42 已通过正式40步计时（job 124023，This Program Cost 342.549s，Evolve 329.018s，FINAL: PASS），是当前有效最优。TwoPuncture solver-only paired 由约277s降至8.47s；#27–#29、THP slab 和 hybrid MPI+OpenMP 仍然拒绝。
 
-下一步回到 BSSN 演化和 AMR 负载不均衡，优先重新对 #35 做 paired `perf stat/record`，再选择 `polint`/分析临时数组或更深的 RHS producer-consumer 分块。任何新候选仍需4步 paired perf/correctness gate；不要重复 #27–#29 的已拒绝实现。
+当前主要剩余热点是 `compute_rhs_bssn_fused_`、batch stencil 和 AMR 层级等待。后续候选仍需4步 paired perf/correctness gate，之后再做正式40步验证；不要重复已拒绝的 rank/SMT、THP 或普通 tile 方案。
 
 ## 8. 代码结构与已知约束
 

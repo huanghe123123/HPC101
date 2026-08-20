@@ -640,3 +640,202 @@
 - 结论：#35 成为当前正式 CPU 基线；下一步回到 BSSN/AMR/analysis 热点。
 
 <!-- 后续集群正式运行记录追加在此线之下 -->
+
+## 优化 #36：`co=1` 跳过约束专用中间数组写回（2026-08-19）
+- 作业：116964；MPI=30、OMP=1、4步、TwoPuncture cache、B=2；baseline/candidate 使用完全相同编译参数。
+- 改动：在 `compute_rhs_bssn_fused` 中，`gup*`、`R*`、`Gam***` 共30个只供 `co=0` 约束块读取的数组，仅在 `co==0` 时写回；`co=1` 仍执行标量计算，不改变演化公式和ABI。
+- 正确性：baseline/candidate 均 `FINAL: PASS`，Trajectory RMS=0，匹配4/100组；level-0 constraint maxima 均为 Ham=0.22588831、Px=0.02448088、Py=0.0091883125、Pz=0.014353656。
+- `perf stat`：Total elapsed `57.8399s → 57.4351s`（-0.70%）；cycles `3.9832e12 → 3.9754e12`（-0.20%）；L1D miss `29.45e9 → 25.94e9`、LLC miss `6.769e9 → 6.535e9`、dTLB miss `180.35e9 → 167.05e9`。
+- perf report 中 `compute_rhs_bssn_fused_` self share `14.55% → 13.45%`，但总演化下降未达到1%门槛。
+- 结论：访存计数改善，墙钟收益不足，**不默认开启**；保留 `AMSS_RHS_SKIP_CONSTRAINT_STORES` 作为后续组合实验开关。
+
+## 优化 #37：`chin1` 与对角度规辅助扫描消除（2026-08-19）
+- 作业：120789；MPI=30、OMP=1、4步、TwoPuncture cache、B=2；baseline/candidate 使用完全相同编译参数。
+- 改动：`co=1` 跳过 `chin1=chi+1` 整数组扫描；batch lopsided 对对角度规直接使用 `dxx/dyy/dzz`，利用 lopsided 系数和为0消除 `gxx/gyy/gzz` 三个辅助数组的生成与读取。#36 保持关闭。
+- 正确性：两侧 `FINAL: PASS`，Trajectory RMS=0，匹配4/100组；level-0 constraint maxima 两侧均为 Ham=0.22588831、Px=0.02448088、Py=0.0091883125、Pz=0.014353656。
+- `perf stat`：Total elapsed `54.1887s → 53.6783s`（-0.942%）；cycles `3.8242e12 → 3.7804e12`（-1.146%）；instructions -0.628%，L1D miss -2.629%，dTLB miss -1.881%，LLC miss绝对数 +0.891%。
+- `Total Evolve` 两次 paired 运行分别为 `41.453s → 40.9057s`（-1.32%）和 `40.696s → 40.2313s`（-1.14%）。
+- 结论：演化时间稳定达到1%门槛，**接受并默认开启**；下一步提交正式40步验证。
+
+## 优化 #37 正式40步验证（2026-08-19）
+- 作业：120900；默认开启 #37，MPI=30、OMP=1、TwoPuncture OMP=30、NRELAX=10、无 cache、Final_Evolution_Time=40.0。
+- 结果：`This Program Cost=402.9969s`，`Total Evolve=390.744s`，`Total Running=393.718s`。
+- 正确性：匹配40/100 golden groups，Trajectory RMS `4.05058975e-6%`，40 time groups、9 levels，`FINAL: PASS`；约束全部通过。
+- 对比 #35：端到端 `411.257s → 402.997s`（-2.01%），演化 `397.011s → 390.744s`（-1.58%）。
+- 结论：#37 进入当前正式 CPU 基线。
+
+## 优化 #38：BSSN 演化 hybrid MPI+OpenMP（fused RHS 主循环，2026-08-19）
+
+> 依据 [BSSN_HYBRID_OMP_PLAN.md](../BSSN_HYBRID_OMP_PLAN.md) Switch 1。历史 #2 给旧版 stencil 子程序加过 OpenMP（30×1 最快），但 #2 没覆盖 #8 才出现的 fused RHS 主循环；本轮专门并行该循环。
+
+- 记录状态：`4 步 perf 探索`；正确性通过（private 列表完整、无竞争），性能负向，代码保留在开关后默认关闭，不进正式路径。
+- 优化内容：在 `compute_rhs_bssn_fused_`（src/bssn_rhs.f90:1056–3325）的非 tiled k/j 循环（`:1492` `#else` 分支）外加 `!$omp parallel do collapse(2) schedule(static) if(omp_get_max_threads()>1 .and. pointwise_mode) private(<194 个点级标量>)`。`pointwise_mode=(co==1 .and. Symmetry<=1)`（`:1319`），故 co==0 约束路径和 octant 串行、无竞争。新增编译开关 `AMSS_RHS_OMP_ASSEMBLY`（CMakeLists.txt，默认 OFF）；`use omp_lib`（`if()` 子句在 `implicit none` 下需显式声明 `omp_get_max_threads`）。循环体逐字节未动。
+- 实现细节：
+  - private 列表由脚本从声明块 `bssn_rhs.f90:1209–1269` 生成（194 个），含所有 `*_s` 标量、`gxxx_t..gzzz_t`、`gxxx2_s` 组、`pw_*` 导数结果标量、`pw_order`、`SSS..SSA`、`i,j,k`。共享量（留 function scope）：`PI`（循环后复用）、`dX/dY/dZ`、`pw_d12x…pw_fyzc`、`pw_imin/jmin/kmin`、所有输入/输出/存储数组。
+  - `if()` 子句双重门控：OMP=1 时为假→循环串行（无团队开销），co==0 时为假→约束路径串行。意图是开关 OFF 时 #37 逐位不变、开关 ON 且 OMP=1 时也不回退。
+- 运行参数：阶段A paired，4 步，`--twop-cache`，`AMSS_RHS_LOCALITY=POINTWISE`、`AMSS_BATCH_STENCIL=ON` B=2、TwoPuncture OMP=30/NRELAX=10。
+- 作业与产物：阶段A job 121399（baseline 30×1 OFF、cand 30×1 ON、cand 15×2 ON）；阶段A2 job 121433（baseline 15×2 OFF，用于同 rank 数 race-check）；脚本 `profilescripts/profile_hybrid_stageA_cluster.sh`、`profile_hybrid_stageA2_cluster.sh`、`hybrid_stageA2_diff.sh`；日志 `optimization_logs/hybrid_stageA_*.run.log`、`hybrid_stageA2_*.run.log`；运行输出 `perf_runs/{baseline_30x1_off,cand_30x1_on,cand_15x2_on,baseline_15x2_off}/`。
+- 运行结果（4 步，Total Evolve）：
+
+  | config | switch | MPI×OMP | bind | Total Evolve | This Program Cost |
+  |---|---|---|---|---:|---:|
+  | baseline 30×1 | OFF | 30×1 | — | 38.7196s | 39.888s |
+  | cand 30×1 | ON | 30×1 | — | 40.6403s | 42.317s |
+  | cand 15×2 | ON | 15×2 | `--bind-to core --map-by slot:pe=2` | 108.839s | 110.378s |
+  | baseline 15×2 | OFF | 15×2 | `--bind-to core --map-by slot:pe=2` | 134.291s | 135.778s |
+
+- 正确性（race-check，关键）：
+  - 30×1 ON vs 30×1 OFF：`FINAL: PASS`，Trajectory RMS=0，level-0 constraint maxima `Ham=0.22588831, Px=0.02448088, Py=0.0091883125, Pz=0.014353656` 与 OFF 逐位一致。
+  - 15×2 ON vs 15×2 OFF（同 rank 数、仅开关不同）：剥除 `bssn_BH.dat` 时间戳注释头后数据行 **bit-identical**（`hybrid_stageA2_diff.sh` 输出 `BIT-IDENTICAL`）。→ private 列表完整，OMP=2 下无数据竞争。
+  - 15×2 ON 对 30-rank golden：`FINAL: FAIL`，Trajectory RMS=12.443238%，但 constraint maxima 仍逐位为 `Ham=0.22588831` 等。→ 这是拿 15-rank 轨迹比 30-rank golden 的测试设计问题（rank 数变了→collective 模式变→轨迹合理发散），不是竞争、不是数值发散。
+- 性能分析：
+  - 30×1 ON vs OFF：演化 +5.0%（38.72→40.64s），超计划 §6 的 ±0.5% 无回归门。`if()` 为假时循环虽串行，但 `private(194 标量)` + `collapse(2)` 改了 gfortran 代码生成，串行路径也付开销（每 (k,j) 迭代的 private 栈设置/代码布局变化）。其中含节点负载成分（本次 baseline 38.72s 偏快于历史 #37 4 步的 ~40–41.5s），但 directive 静态开销确实存在。
+  - 15×2 ON vs 15×2 OFF：演化 -19%（134.29→108.84s），OpenMP 在每 rank 的多块上确有并行收益（打破了 #2「块太小、同步开销吃掉收益」的旧结论——因为 #2 测的是旧 stencil 子程序，不是 fused 主循环）。
+  - 15×2 ON vs 30×1：端到端慢 2.8×（110s vs 40s）。减半 rank 让每 rank 计算量翻倍，OMP=2 只能部分补偿，与 #1 rank 探索（9→30 单调加速）一致。
+- 结论：**hybrid 物理核方向判定失败，拒绝**。硬门未过：30×1 ON 回退 +5% > ±0.5%；15×2 端到端慢 2.8×。private 列表正确性已验证（OMP=2 bit-identical），代码保留在 `AMSS_RHS_OMP_ASSEMBLY` 宏后默认 OFF，#37 正式基线不变。
+- 备注：SMT 模式（30×2/15×4/10×6/6×10）随后单独测试（阶段C）；若 SMT 亦负向，hybrid OpenMP 方向整体放弃，回到 THP slab / LLC-dTLB 备选。
+- 下一步：阶段C SMT sweep；无论结果如何不修改正式默认路径。
+
+## 优化 #38 阶段C：SMT hybrid OpenMP sweep（2026-08-19）
+
+> 阶段A 物理核 hybrid 失败后，按 BSSN_HYBRID_OMP_PLAN.md §3.2/§5 阶段C 补完 SMT 矩阵。SMT 保持 30 物理核、用满 60 逻辑 CPU：每 rank 的 OMP 线程落到其物理核的 SMT sibling。理论动机是 SMT 隐藏内存等待。
+
+- 记录状态：`4 步 perf 探索`；正确性通过（constraint 逐位一致、无竞争），性能负向，hybrid OpenMP 方向整体放弃。
+- 运行参数：4 步，`--twop-cache`，switch ON（`AMSS_RHS_OMP_ASSEMBLY=ON`），POINTWISE/B=2/TwoPuncture OMP=30/NRELAX=10。SMT 绑核：`--bind-to core --map-by slot:pe=<phys/rank>`，`OMP_PLACES=threads`、`OMP_PROC_BIND=spread`。编译一次共用 `build_hybrid_smt`。
+- 作业与产物：job 121465；脚本 `profilescripts/profile_hybrid_stageC_smt_cluster.sh`；日志 `optimization_logs/hybrid_stageC_cand_*_smt_on.run.log` + `hybrid_stageC_compile.log`；运行输出 `perf_runs/cand_{30x2,15x4,10x6,6x10}_smt_on/`。
+- 运行结果（4 步，Total Evolve；参考 30×1 OFF #37 = 38.72s/4step，阶段A job 121399）：
+
+  | config | MPI×OMP | phys/rank (pe) | Total Evolve | This Program Cost | check.sh | Ham (level 0) |
+  |---|---|---:|---:|---:|---|---|
+  | cand 30×2 SMT | 30×2 | 1 | **39.9813s** | 41.336s | FINAL: PASS, RMS=0 | 0.22588831 |
+  | cand 15×4 SMT | 15×4 | 2 | 84.7801s | 86.262s | FAIL(RMS 12.44%, rank≠30) | 0.22588831 |
+  | cand 10×6 SMT | 10×6 | 3 | 86.4326s | 87.876s | PASS(matched prefix 4/100, RMS=0) | 0.22588831 |
+  | cand 6×10 SMT | 6×10 | 5 | 107.379s | 108.949s | PASS(matched prefix, RMS=0) | 0.22588831 |
+
+- 正确性：四个配置 level-0 constraint maxima 全部逐位 `Ham=0.22588831, Px=0.02448088, Py=0.0091883125, Pz=0.014353656`（与 #37 一致）→ SMT 下无竞争、无数值发散。30×2（rank=30）对 golden `FINAL: PASS, RMS=0` 是直接判定通过。15×4 的 `FAIL RMS=12.44%` 与阶段A 15×2 物理核完全相同（同一 15-rank 轨迹比 30-rank golden 的测试设计问题，rank 数变→collective 模式变→轨迹合理发散）；10×6/6×10 的 `PASS RMS=0` 是 matched-prefix 4/100 的巧合（前 4 步 BH 位置恰在 `--time-tolerance 1e-8` 内匹配 golden），不表示 10/6 rank 等价于 30 rank。
+- 性能分析：
+  - **30×2 SMT（39.98s）比 30×1 ON（40.64s）略快 1.6%，但比 30×1 OFF（38.72s）仍慢 3.3%**。SMT 第二线程在 compute-bound 双精度 stencil 上几乎无贡献（与 #5 SVE lane 不增、#1 `--use-hwthread-cpus` 争抢更慢一致），仅摊掉了 OMP=1 ON 那部分 directive 静态开销，未带来净正收益。
+  - 减 rank 明显变慢：30×2(39.98) → 15×4(84.78) → 10×6(86.43) → 6×10(107.38)。与阶段A 物理核趋势一致（#1 rank 探索：9→30 单调加速，减 rank 必慢），OMP 线程无法补偿每 rank 计算量翻倍。
+  - 15×4 SMT（84.78s）比 15×2 物理核 ON（108.84s）快 22%——SMT 在减 rank 场景下能部分补偿（每 rank 块多，OMP 多线程有更多并行面），但绝对值仍是 #37 的 2.2×。
+- 结论：**SMT 方向亦失败，hybrid OpenMP 整体放弃**。所有配置相对 #37（38.72s/4step）无稳定收益：30×2 慢 3.3%、其余慢 2.2–2.8×。`AMSS_RHS_OMP_ASSEMBLY` 保持默认 OFF，#37 正式基线不变。SMT 未隐藏 compute-bound 双精度 stencil 的内存等待（该等待本就是 LLC-miss 39% 的访存瓶颈，SMT sibling 共享 L1/L2，无法并行掩盖同级 cache miss）。
+- 下一步：hybrid MPI+OpenMP/SMT 方向全部否决，回到 BSSN_HYBRID_OMP_PLAN.md §6 末尾的备选（THP slab / LLC-dTLB miss 降低），或其它不改变 rank/线程模型的访存优化。
+
+
+## 阶段一：LLC/dTLB miss 归因（2026-08-19）
+
+> BSSN_LLC_DTLB_THP_PLAN.md §阶段一。先归因 miss 来源，再决定阶段二/三是否值得做。#37 基线，4 步，30×1，`--twop-cache`，`-O3 -g -fno-omit-frame-pointer -march=native`。
+
+- 记录状态：`诊断`（miss 归因，不计时）。
+- 作业与产物：job 121544（perf stat ×2 + cycle 采样 perf record）；job 121570（首次 miss 事件采样，`-e LLC-load-misses` 未加 `-m` 超 516KB mlock 预算失败）；job 121586（修 `-m 4` 后成功）。原始文件 `perf_profiles/llc_dtlb_opt37_{llc,dtlb}.stat.txt`、`perf_profiles/llc_dtlb_opt37.data`、`perf_profiles/missattr_opt37_{llcmiss,dtlbmiss}.data`；报告 `perf_profiles/canonical_20260818_a/{llc_dtlb_opt37,missattr_opt37_*}_{self,total,dso}.txt`。
+- 聚合 miss（perf stat，证实计划前提）：
+
+  | 指标 | 计数 | rate |
+  |---|---:|---:|
+  | LLC-load-misses | 6.636e9 | 50.37% |
+  | dTLB-load-misses | 1.524e11 | 3.60% |
+  | cache-misses | 2.849e10 | 0.73% |
+  | task-clock | 1252s | 24.78 CPUs utilized |
+  | IPC | 2.60 | — |
+
+- 周期采样 self%（cycle 热点）：`libopen-pal 0xf13c4` 25.81%（opal 忙等，非访存）、`compute_rhs_bssn_fused_` 16.22%、`lopsided_batch` 15.06%、`polint_` 8.57%、`__memcpy_sve` 4.07%、`prolong3_` 2.84%、`point_d2` 2.54%、malloc/cfree 3.54%。total 显示 `GOMP_parallel` 15.07%（batch stencil 的 OMP 团队创建，OMP=1 时仍有 fork/join 开销，呼应 #38 阶段C）。
+- **miss 事件采样 self%（直接归因，关键）**：
+
+  | 函数 | LLC-load-misses self% | dTLB-load-misses self% |
+  |---|---:|---:|
+  | `rungekutta4_rout_` | **31.17%** | — |
+  | `__memcpy_sve` | 23.09% | — |
+  | `compute_rhs_bssn_fused_` | 12.64% | **28.37%** |
+  | `lopsided_batch` | 10.86% | — |
+  | `enforce_ga_` | 7.28% | — |
+  | `average2_` | 4.80% | — |
+  | libopen-pal（opal 忙等，非真实访存）| — | 51.50% |
+  | libmpi 通信 | 0.76% | ~7% |
+
+- 关键发现：
+  1. **LLC miss 最大单一来源是 `rungekutta4_rout_`（31.2%），不是 RHS/lopsided**。RK4 是 whole-array triad（`f1=f0+a·dT·f_rhs`），40 个演化变量各一独立 malloc 数组，每子步流式扫 3 数组，lev8 工作集 ~20MiB 远超 per-core L3 → 首扫必 miss。计划 §阶段三前提「LLC miss 主要来自 RHS/lopsided」**被推翻**。
+  2. **dTLB miss 的 51% 是 opal 忙等假象**（忙等轮询访问共享内存），真实访存里 compute_rhs 占 28.37% 是最大来源——与计划 §当前基线写的「167 个独立 malloc 不利于 THP 覆盖」一致，支持阶段二 THP slab 方向。
+  3. memcpy（transfer pack/unpack）占 LLC miss 23%，是 AMR 通信的内存搬运。
+- 结论：阶段二（THP slab）针对 dTLB 仍对路（dTLB 真实访存主源是 compute_rhs 扫 167 小数组）；阶段三（derivative tile）前提不成立（LLC 主源是 RK4 不是 RHS），暂缓。
+
+## 优化 #39：THP slab（AMSS_FGFS_HUGEPAGE_SLAB，2026-08-19）
+
+> BSSN_LLC_DTLB_THP_PLAN.md §阶段二。167 个独立 fgfs malloc 合并成一个 2MiB 对齐、MADV_HUGEPAGE 背书的 slab，降低 dTLB miss 和页表 walk。
+
+- 记录状态：`4 步 perf 探索`；正确性通过（逐位一致），性能严重负向（+50% 回退），拒绝。开关默认 OFF，#37 不变。
+- 优化内容：`src/Block.h` 新增 `double *fgfs_slab;`（switch 守护）；`src/Block.C` 构造时一次 `posix_memalign(2MiB)` 拿整块 slab，每字段 view 对齐到 2MiB 边界（`field_stride = round_up(nn*8, 2MiB)`），`madvise(MADV_HUGEPAGE)` 请求大页；析构 `free(fgfs_slab)` 一次；`swapList` 只换 view 指针，slab 所有权不动。`CMakeLists.txt` 新增 `option AMSS_FGFS_HUGEPAGE_SLAB OFF` + define 块 + 摘要打印。顺带修复 USE_GPU 分支悬空 `}` 的 `#endif` 错位。
+- 运行参数：paired 4 步，30×1，`--twop-cache`，`-O3 -g -fno-omit-frame-pointer`。baseline OFF（#37）/ candidate ON。
+- 作业与产物：job 121636；脚本 `profilescripts/profile_thp_slab_stage2_cluster.sh`；日志 `perf_profiles/thp_{baseline_off,candidate_on}.run.log` + stat/data；运行输出 `perf_runs/thp_{baseline_off,candidate_on}/`。
+- 运行结果（4 步，Total Evolve 取自 `ABE_out.log`）：
+
+  | 指标 | baseline OFF | candidate ON | 变化 |
+  |---|---:|---:|---:|
+  | Total Evolve | 38.5361s | 57.827s | **+50.0% 回退** |
+  | task-clock (LLC run) | 1265s | 1936s | +53% |
+  | cycles | 3.57e12 | 4.93e12 | +38% |
+  | instructions | 9.62e12 | 1.06e13 | +10% |
+  | IPC | 2.69 | 2.16 | -20% |
+  | LLC-load-misses 绝对数 | 6.65e9 | 7.30e9 | +10% |
+  | LLC-load-misses rate | 50.05% | 13.80% | -36pp（假象） |
+  | dTLB-load-misses 绝对数 | 1.53e11 | 1.69e11 | +11% |
+  | dTLB-load-misses rate | 3.54% | 3.50% | 基本不变 |
+
+- 正确性：candidate `FINAL: PASS`，Trajectory RMS=0，level-0 constraint maxima `Ham=0.22588831, Px=0.02448088, Py=0.0091883125, Pz=0.014353656` 与 baseline **逐位一致**。slab 布局改对了，ABI 不变，无数据错误。
+- 性能分析（拒绝依据）：
+  1. **Total Evolve +50% 回退**，远超计划 §验收「≥1% 改善」门槛（方向反了 50 倍）。
+  2. **LLC miss rate 从 50% 降到 13.8% 是假象**：candidate 跑得慢得多（57.8s vs 38.5s），分母（总访问）变小，rate 降低是数学假象；**绝对 miss 数反而 +10%**。task-clock/cycles 暴涨 +53%/+38%、IPC 从 2.69 跌到 2.16、instructions +10% 是真实信号：每条指令更慢、执行更多指令。
+  3. **dTLB miss 完全没降**（3.54%→3.50%，绝对数 +11%）——THP 的核心目标未达成。
+- 根因：`field_stride = round_up(nn*8, 2MiB)` 让每字段占满 2MiB（哪怕数据只有 0.24–0.84 MiB），167 字段 × 2MiB = 334MiB/Block，远超原来 40–141MiB。工作集暴涨，per-core L3（几 MiB）根本装不下；且字段间隔 2MiB 破坏了原有空间局部性（原来相邻字段地址连续，RK4/RHS 扫多字段时预取器能带动，现在每字段间隔 2MiB 空洞，预取失效）。THP 用大页减 TLB 项的收益被工作集膨胀 + cache 局部性破坏的代价完全压倒。dTLB miss 本就只有 3.5%（阶段一归因显示 51% 是 opal 忙等假象，真实 compute_rhs 只占 28%），优化空间有限。
+- 结论：**THP slab 方向拒绝**。`AMSS_FGFS_HUGEPAGE_SLAB` 保持默认 OFF，#37 正式基线不变。代码保留在开关后作为实验档案。
+- 备注：THP/大页对「工作集远大于 L3 + 字段间有空间局部性」的场景是负优化。若要降低 dTLB miss，应在不膨胀工作集的前提下做（如紧排 slab 而非 2MiB 对齐每字段，但那样 fgfs[i] 可能跨 2MiB 边界、大页背书失效——THP 与紧凑布局在 167 个小字段上本质冲突）。阶段三（derivative tile）前提在阶段一已被推翻（LLC 主源是 RK4 不是 RHS），亦暂缓。
+- 下一步：LLC/dTLB 优化方向（THP slab、derivative tile）均不成立或负向，#37 维持。可考虑的剩余方向：RK4 整数组流式的 miss（31% LLC 来源，但属算法固有 whole-array triad，改写需动 RK4 数据流）、或不再追求访存优化转向其它。
+
+## 优化 #40：BSSN 数值 kernel 候选（2026-08-20）
+
+- 目的：验证 `batch stencil` 并行区、`enforce_ga` 点式化、RK4 下界融合、RK4 空间块化和 Sommerfeld 批处理；所有候选均由独立 CMake 开关控制，默认关闭，不改变 #37 正式路径。
+- 开关：`AMSS_BATCH_STENCIL_SINGLE_REGION`、`AMSS_ENFORCE_GA_POINTWISE`、`AMSS_RK4_FUSE_LOWERBOUND`、`AMSS_RK4_BATCHED`、`AMSS_SOMMERFELD_BATCHED`。
+- 正确性：五个单项候选均通过 tiny 单层/1-rank smoke，`bssn_BH.dat` 和 `bssn_constraint.dat` 去除注释时间头后与 OFF 逐项一致；batch/enforce 两个候选又完成 30-rank/1-step smoke，均 `FINAL: PASS`、Trajectory RMS=0、constraint maxima 一致。
+- 30-rank/1-step 同节点配对（`TotalTime=1.0`，仅用于候选筛选）：
+
+  | 配置 | Total Evolve | Total Running | 相对 OFF | 状态 |
+  |---|---:|---:|---:|---|
+  | OFF baseline | 558.307s | 575.405s | — | PASS |
+  | batch single-region | 561.611s | 585.807s | Evolve +0.59% | 拒绝 |
+  | enforce_ga pointwise | 522.406s | 542.587s | Evolve -6.43% | 保留候选 |
+
+- tiny kernel 方向筛选：lowerbound 融合与 RK4 tiled 在 16×16×8/1-rank 上明显慢于 OFF；Sommerfeld batch 与 OFF 基本持平，因此这三项暂不安排长时间 30-rank 配对，开关保持关闭。
+- 集群 4-step 配对：job `123751` 在 30 MPI ranks、1 OMP thread、TwoPuncture cache 开启的条件下，以 `AMSS_ENFORCE_GA_POINTWISE=ON` 完成运行；CMake 日志确认开关确实生效。候选结果为 `Total Evolve=38.6471s`、`Total Running=41.9494s`、`Program Cost=42.4853s`。作业内置的 `check.sh` 因相对路径重复拼接而误报失败，改用绝对路径复核后为 `FINAL: PASS`，Trajectory RMS=0、constraints PASS。
+- 与 #38 的 30-rank/1-thread OFF 4-step 参考（`Total Evolve=38.7196s`）相比，Evolve 仅改善 **0.187%**，低于「≥1%」验收门槛，属于测量噪声范围；此前本地共享 DevPod 上看到的约 6.4% 不具备代表性。因此拒绝该优化，`AMSS_ENFORCE_GA_POINTWISE` 保持默认 OFF，#37 正式基线不变。
+
+## 优化 #41：CPU fast-math（2026-08-20）
+
+- 目的：验证在 CPU `ABE` 的 C++/Fortran 演化 target 上启用 `-ffast-math` 是否能减少浮点运算指令；不把该选项施加到 TwoPuncture 初值求解器或 GPU target。
+- 实现：`CMakeLists.txt` 新增 `AMSS_FAST_MATH`，并由 `compile.sh` 转发；正式验证期间显式 `AMSS_ENABLE_GPU=OFF`、`AMSS_FAST_MATH=ON`。通过后将两个默认值设为 ON，仍可用 `-DAMSS_FAST_MATH=OFF` 回退。
+- 短测 paired：job `123890`，MPI=30、OMP=1、4 step、TwoPuncture cache=ON；OFF/ON 均 `FINAL: PASS`、Trajectory RMS=0、constraint 逐位一致。
+
+  | 配置 | Total Evolve | Total Running | Program Cost |
+  |---|---:|---:|---:|
+  | fast-math OFF | 40.1683s | 40.8018s | 41.5936s |
+  | fast-math ON | 38.5437s | 39.1501s | 39.9417s |
+
+  `Total Evolve` 下降约4.05%，`Program Cost` 下降约3.97%。
+- 硬件计数器 paired：job `123914`，OFF/ON 的 Evolve 为 38.5693/37.9333s；cycles 下降3.33%，instructions下降2.31%，task-clock下降1.51%。LLC-load-misses 绝对数为 6.696e9→6.737e9、miss rate 50.35%→50.60%，没有访存收益；dTLB-load-misses 下降约2.97%。收益主要来自指令数和浮点调度，不应归入 LLC 优化。
+- 正式验证：job `123942`，脚本 `profilescripts/run_opt41_fastmath_formal40_cluster.sh`，日志 `optimization_logs/opt41_fastmath_formal40`。CPU-only、MPI=30、OMP=1、B=2、TwoPuncture cache=OFF、40 step；`Total Evolve=379.041s`、`Total Running=381.984s`、`This Program Cost=390.893s`，Trajectory RMS=`4.05058975e-06%`，constraints PASS，`FINAL: PASS`。
+- 结论：**接受 #41，`AMSS_FAST_MATH` 默认开启**。它不会改变默认的 GPU 编译路径（GPU 仍 OFF），TwoPuncture 仍使用不带该选项的 target。
+
+## 优化 #42：global_interp 固定 uniform6 polint 核（2026-08-20）
+
+- 目的：`perf record` 显示 `polint_` 是 analysis/interpolation 路径的高热点；检查是否能利用当前 `global_interp` 恒定 `ordn=2*ghost_width=6` 且每轴采样点为 `(0,1,...,5)` 的事实，去掉通用 Neville 插值的数组复制、循环边界和逐次调用开销。
+- 实现：新增 `AMSS_POLINT_UNIFORM6`。在 `global_interp` 中仅当 `ORDN==6` 时调用 `polin3_uniform6`：先计算三轴 6 点 Lagrange 权重，再做固定大小的 6×6×6 tensor-product contraction。`polin3/polint` 原实现保留为其他 order 和其他调用者的 fallback；`interp_2`、AMR Restrict/Prolong、Sommerfeld 不走专用核。`dy` 在该调用路径未被消费者使用，因此专用核将其置零。
+- 局部逐点检查：专用核与通用 `polin3` 对固定 6×6×6 数据、非整数坐标的绝对差为 `1.78e-15`；集群 4-step 输出中的 trajectory、constraint 和 golden 比较均通过。
+- paired perf/correctness：job `123998`，脚本 `profilescripts/profile_opt42_polint_uniform6_cluster.sh`，结果目录 `perf_profiles/opt42_polint_uniform6/`。两套均 CPU-only、fast-math=ON、MPI=30、OMP=1、4 step、B=2、TwoPuncture cache=ON。
+
+  | 配置 | 第一次 Total Evolve | 第二次 Total Evolve | check |
+  |---|---:|---:|---|
+  | uniform6 OFF | 39.4079s | 39.4224s | `FINAL: PASS` |
+  | uniform6 ON | 33.1405s | 33.5164s | `FINAL: PASS` |
+
+  candidate 两次均与 baseline 的 4-step trajectory RMS=0、level-0 constraints 逐位一致。
+- `perf stat` 原始文件：`opt42_baseline_fastmath.stat.txt`、`opt42_candidate_uniform6.stat.txt`。基线/候选的 cycles 为 3.416e12/2.869e12（-16.03%），instructions 为 8.881e12/7.562e12（-14.85%），perf elapsed 为 49.063/42.945s（-12.47%）。LLC-load-misses 为 6.977e9/6.966e9（绝对数基本不变，rate 52.85%→52.70%）；dTLB-load-misses 为 1.461e11/1.379e11（绝对数约降5.61%，rate 3.59%→3.87%）。收益来自消除通用插值算术/临时量，不是依靠降低 LLC miss。
+- 本地 `perf report`：`opt42_baseline_fastmath_self.txt` 中 `polint_` self=9.05%、`polin3_`=0.63%；`opt42_candidate_uniform6_self.txt` 中 `polin3_uniform6_`=0.14%，原 `polint_` 不再进入热点。调用树中 `global_interp_` 仍保留，说明只替换了内部数值核。
+- 正式验证：job `124023`，脚本 `profilescripts/run_opt42_polint_formal40_cluster.sh`，日志 `optimization_logs/opt42_polint_formal40`。CPU-only、fast-math=ON、uniform6=ON、MPI=30、OMP=1、B=2、TwoPuncture cache=OFF、40 step；`Total Evolve=329.018s`、`Total Running=332.715s`、`This Program Cost=342.54874753952026s`，Trajectory RMS=`4.05058975e-06%`，constraints PASS，`FINAL: PASS`。相对 #37 的 390.744/402.997s，演化约快15.80%，端到端约快15.00%。
+- 结论：**接受 #42，`AMSS_POLINT_UNIFORM6` 默认开启**。该开关只影响 CPU `ABE` 的 `global_interp` ordn=6 路径；其他插值和 GPU 代码保持原实现。

@@ -19,6 +19,7 @@
 #ifdef fortran3
 #define f_euler_rout euler_rout_
 #define f_rungekutta4_rout rungekutta4_rout_
+#define f_rungekutta4_rout_lowerbound rungekutta4_rout_lowerbound_
 #define f_rungekutta4_scalar rungekutta4_scalar_
 #define f_icn_rout icn_rout_
 #define f_icn_scalar icn_scalar_
@@ -34,6 +35,13 @@ extern "C"
 	int f_rungekutta4_rout(int *, double &,
 						   double *, double *, double *,
 						   int &);
+}
+
+extern "C"
+{
+	int f_rungekutta4_rout_lowerbound(int *, double &,
+								  double *, double *, double *,
+								  int &, double &);
 }
 
 extern "C"

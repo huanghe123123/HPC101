@@ -104,6 +104,52 @@ contains
     if (Bsz < 1) Bsz = nv
     if (Bsz > nv) Bsz = nv
 
+#ifdef AMSS_BATCH_STENCIL_SINGLE_REGION
+    ! The legacy layout starts one OpenMP team for every field batch.  With
+    ! B=2 this is twelve fork/join regions per call.  Keep the arithmetic and
+    ! field order unchanged, but distribute (k, field-batch) with one team.
+    !$omp parallel do collapse(2) schedule(static) &
+    !$omp& private(i,j,k,b,bb,c,dxs,dys,dzs,sb,cs,ce)
+    do k = 1, kmax
+      do cs = 1, nv, Bsz
+        ce = min(cs + Bsz - 1, nv)
+        do j = 1, ex(2)
+          do i = 1, ex(1)
+            if (i-3 >= imin .and. i+3 <= imax .and. &
+                j-3 >= jmin .and. j+3 <= jmax .and. &
+                k-3 >= kmin .and. k+3 <= kmax) then
+              do b = cs, ce
+                bb = b
+                sb = s3(b)
+                c = fp(b)%p(i,j,k)
+                dxs = (fp(b)%p(i-3,j,k)+fp(b)%p(i+3,j,k)) &
+                    - SIX*(fp(b)%p(i-2,j,k)+fp(b)%p(i+2,j,k)) &
+                    + FIT*(fp(b)%p(i-1,j,k)+fp(b)%p(i+1,j,k)) &
+                    - TWT*c
+                dys = (fp(b)%p(i,j-3,k)+fp(b)%p(i,j+3,k)) &
+                    - SIX*(fp(b)%p(i,j-2,k)+fp(b)%p(i,j+2,k)) &
+                    + FIT*(fp(b)%p(i,j-1,k)+fp(b)%p(i,j+1,k)) &
+                    - TWT*c
+                if (reflect) then
+                  dzs = (zref(fp(b)%p,i,j,k-3,sb)+fp(b)%p(i,j,k+3)) &
+                      - SIX*(zref(fp(b)%p,i,j,k-2,sb)+fp(b)%p(i,j,k+2)) &
+                      + FIT*(zref(fp(b)%p,i,j,k-1,sb)+fp(b)%p(i,j,k+1)) &
+                      - TWT*c
+                else
+                  dzs = (fp(b)%p(i,j,k-3)+fp(b)%p(i,j,k+3)) &
+                      - SIX*(fp(b)%p(i,j,k-2)+fp(b)%p(i,j,k+2)) &
+                      + FIT*(fp(b)%p(i,j,k-1)+fp(b)%p(i,j,k+1)) &
+                      - TWT*c
+                end if
+                frp(b)%p(i,j,k) = frp(b)%p(i,j,k) + e*(dxs/dX + dys/dY + dzs/dZ)
+              end do
+            end if
+          end do
+        end do
+      end do
+    end do
+    !$omp end parallel do
+#else
     do cs = 1, nv, Bsz
       ce = min(cs + Bsz - 1, nv)
       !$omp parallel do private(i,j,k,b,bb,c,dxs,dys,dzs,sb)
@@ -144,6 +190,7 @@ contains
       end do
       !$omp end parallel do
     end do
+#endif
   end subroutine kodis_batch
 
   ! =====================================================================
@@ -190,9 +237,19 @@ contains
     if (Bsz < 1) Bsz = nv
     if (Bsz > nv) Bsz = nv
 
+#ifdef AMSS_BATCH_STENCIL_SINGLE_REGION
+    ! Keep one team alive across all B-sized field groups.  Each thread walks
+    ! the same serial cs loop and shares the point loop with an omp do; the
+    ! barrier at the end of every omp do preserves the original group order.
+    !$omp parallel private(i,j,k,b,xb,yb,zb,sx,sy,sz,r,sb,cs,ce)
+    do cs = 1, nv, Bsz
+      ce = min(cs + Bsz - 1, nv)
+      !$omp do schedule(static)
+#else
     do cs = 1, nv, Bsz
       ce = min(cs + Bsz - 1, nv)
       !$omp parallel do private(i,j,k,b,xb,yb,zb,sx,sy,sz,r,sb)
+#endif
       do k = 1, ex(3)-1
         do j = 1, ex(2)-1
           do i = 1, ex(1)-1
@@ -350,8 +407,15 @@ contains
           end do
         end do
       end do
+#ifdef AMSS_BATCH_STENCIL_SINGLE_REGION
+      !$omp end do
+#else
       !$omp end parallel do
+#endif
     end do
+#ifdef AMSS_BATCH_STENCIL_SINGLE_REGION
+    !$omp end parallel
+#endif
   end subroutine lopsided_batch
 
 end module batch_stencils

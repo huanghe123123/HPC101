@@ -333,7 +333,17 @@
      write(*,*)"data range: ",X(1),X(ex(1)),Y(1),Y(ex(2)),Z(1),Z(ex(3))
      stop
   endif
+#ifdef AMSS_POLINT_UNIFORM6
+  if (ORDN == 6) then
+     ! global_interp always builds x1a=(0,1,...,5).  Keep the generic
+     ! polin3 path for all other orders and for all other callers below.
+     call polin3_uniform6(ya,cx(1),cx(2),cx(3),f_int,ddy)
+  else
+     call polin3(x1a,x1a,x1a,ya,cx(1),cx(2),cx(3),f_int,ddy,ORDN)
+  endif
+#else
   call polin3(x1a,x1a,x1a,ya,cx(1),cx(2),cx(3),f_int,ddy,ORDN)
+#endif
 
   return
 
@@ -800,6 +810,78 @@ end subroutine d2dump
   return
 
   end subroutine polin3
+
+!------------------------------------------------------------------------------
+! Fixed-order uniform-grid interpolation used only by global_interp.
+!
+! global_interp passes six points x=(0,1,...,5) on every axis in the current
+! CPU configuration (2*ghost_width with ghost_width=3).  The legacy path calls
+! the general Neville kernel 133 times for one 6^3 point stencil: 36 z-lines,
+! 6 y-lines, and 1 x-line.  This kernel computes the same tensor-product
+! Lagrange polynomial using fixed-size arrays and no allocatable/assumed-size
+! temporaries.  AMR Restrict/Prolong, interp_2, and Sommerfeld still call the
+! original polin3/polint routines.
+!------------------------------------------------------------------------------
+  subroutine polin3_uniform6(ya,x1,x2,x3,y,dy)
+
+  implicit none
+
+  real*8, dimension(6,6,6), intent(in) :: ya
+  real*8, intent(in) :: x1,x2,x3
+  real*8, intent(out) :: y,dy
+
+  real*8, dimension(6) :: wx,wy,wz, yz, yx
+  integer :: i,j,k
+
+  call uniform6_weights(x1,wx)
+  call uniform6_weights(x2,wy)
+  call uniform6_weights(x3,wz)
+
+  do i=1,6
+     do j=1,6
+        yz(j) = 0.d0
+        do k=1,6
+           yz(j) = yz(j) + wz(k)*ya(i,j,k)
+        enddo
+     enddo
+     yx(i) = 0.d0
+     do j=1,6
+        yx(i) = yx(i) + wy(j)*yz(j)
+     enddo
+  enddo
+
+  y = 0.d0
+  do i=1,6
+     y = y + wx(i)*yx(i)
+  enddo
+  ! The caller only needs the interpolated value.  The legacy dy is a
+  ! Neville error estimate and is not consumed by global_interp.
+  dy = 0.d0
+
+  end subroutine polin3_uniform6
+
+  subroutine uniform6_weights(x,w)
+
+  implicit none
+
+  real*8, intent(in) :: x
+  real*8, dimension(6), intent(out) :: w
+  real*8 :: xm1,xm2,xm3,xm4,xm5
+
+  xm1 = x - 1.d0
+  xm2 = x - 2.d0
+  xm3 = x - 3.d0
+  xm4 = x - 4.d0
+  xm5 = x - 5.d0
+
+  w(1) = -(xm1*xm2*xm3*xm4*xm5)/120.d0
+  w(2) =  (x*xm2*xm3*xm4*xm5)/24.d0
+  w(3) = -(x*xm1*xm3*xm4*xm5)/12.d0
+  w(4) =  (x*xm1*xm2*xm4*xm5)/12.d0
+  w(5) = -(x*xm1*xm2*xm3*xm5)/24.d0
+  w(6) =  (x*xm1*xm2*xm3*xm4)/120.d0
+
+  end subroutine uniform6_weights
 !--------------------------------------------------------------------------------------
 ! calculate L2norm  
   subroutine l2normhelper(ex, X, Y, Z,xmin,ymin,zmin,xmax,ymax,zmax,&

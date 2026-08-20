@@ -30,6 +30,12 @@ public:
    // contiguous elements and an independently freeable allocation.
    double *(*fgfs_base);
 #endif
+#ifdef AMSS_FGFS_HUGEPAGE_SLAB
+   // Single contiguous 2 MiB-aligned, MADV_HUGEPAGE-backed allocation holding
+   // all fngfs fields.  fgfs[i] are view pointers (fgfs_slab + i*nn); swapList
+   // only swaps the views, the slab owns the memory and is freed once in ~Block.
+   double *fgfs_slab;
+#endif
 
 #ifdef USE_GPU
    // GPU Shadow pointers and valid flags

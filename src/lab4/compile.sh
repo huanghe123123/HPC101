@@ -8,11 +8,25 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${AMSS_ROOT_DIR:-$SCRIPT_DIR}"
+if [[ -n "${AMSS_ROOT_DIR:-}" ]]; then
+  ROOT_DIR="$AMSS_ROOT_DIR"
+elif [[ -f "$PWD/CMakeLists.txt" ]]; then
+  # hpc/OJ may stage compile.sh under /tmp but keep the checkout as cwd.
+  ROOT_DIR="$(pwd -P)"
+elif [[ -f "$SCRIPT_DIR/CMakeLists.txt" ]]; then
+  # Normal checkout invocation from an arbitrary caller directory.
+  ROOT_DIR="$SCRIPT_DIR"
+else
+  ROOT_DIR="$SCRIPT_DIR"
+fi
 case "$ROOT_DIR" in
   /*) ;;
-  *) ROOT_DIR="$SCRIPT_DIR/$ROOT_DIR" ;;
+  *) ROOT_DIR="$(pwd -P)/$ROOT_DIR" ;;
 esac
+if [[ ! -f "$ROOT_DIR/CMakeLists.txt" ]]; then
+  echo "error: repository root does not contain CMakeLists.txt: $ROOT_DIR" >&2
+  exit 2
+fi
 CMAKE="${CMAKE:-cmake}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 2)}"
 
@@ -38,6 +52,7 @@ elif [[ -n "${CXX:-}" ]]; then
 fi
 [[ -n "${FC:-}" ]]                && cmake_args+=("-DCMAKE_Fortran_COMPILER=$FC")
 [[ -n "${CUDACXX:-}" ]]           && cmake_args+=("-DCMAKE_CUDA_COMPILER=$CUDACXX")
+[[ -n "${AMSS_OPT:-}" ]]          && cmake_args+=("-DAMSS_OPT=$AMSS_OPT")
 [[ -n "${AMSS_ENABLE_GPU:-}" ]]    && cmake_args+=("-DAMSS_ENABLE_GPU=$AMSS_ENABLE_GPU")
 [[ -n "${AMSS_CUDA_ARCHITECTURES:-}" ]] && cmake_args+=("-DCMAKE_CUDA_ARCHITECTURES=$AMSS_CUDA_ARCHITECTURES")
 [[ -n "${AMSS_ARCH_FLAGS:-}" ]]    && cmake_args+=("-DAMSS_ARCH_FLAGS=$AMSS_ARCH_FLAGS")
@@ -51,6 +66,8 @@ cmake_args+=(
   "-DAMSS_ENABLE_OPENMP=${AMSS_ENABLE_OPENMP:-ON}"
   "-DAMSS_TWOP_OPENMP=${AMSS_TWOP_OPENMP:-ON}"
   "-DAMSS_TWOP_DEFAULT_NRELAX=${AMSS_TWOP_DEFAULT_NRELAX:-10}"
+  "-DAMSS_FAST_MATH=${AMSS_FAST_MATH:-ON}"
+  "-DAMSS_POLINT_UNIFORM6=${AMSS_POLINT_UNIFORM6:-ON}"
   "-DAMSS_RHS_LOCALITY=${AMSS_RHS_LOCALITY:-POINTWISE}"
   "-DAMSS_BATCH_STENCIL=${AMSS_BATCH_STENCIL:-ON}"
   "-DAMSS_RHS_NAN_CHECK=${AMSS_RHS_NAN_CHECK:-OFF}"
@@ -59,6 +76,9 @@ cmake_args+=(
   "-DAMSS_VACUUM_BSSN=${AMSS_VACUUM_BSSN:-ON}"
   "-DAMSS_FUSED_RHS_TAIL=${AMSS_FUSED_RHS_TAIL:-ON}"
   "-DAMSS_RHS_BULK_SIMD=${AMSS_RHS_BULK_SIMD:-OFF}"
+  "-DAMSS_RHS_SKIP_CONSTRAINT_STORES=${AMSS_RHS_SKIP_CONSTRAINT_STORES:-OFF}"
+  "-DAMSS_RHS_SKIP_CHIN1_SCAN=${AMSS_RHS_SKIP_CHIN1_SCAN:-ON}"
+  "-DAMSS_RHS_RAW_DIAG_LOPSIDED=${AMSS_RHS_RAW_DIAG_LOPSIDED:-ON}"
   "-DAMSS_FGFS_COLORED_SLAB=${AMSS_FGFS_COLORED_SLAB:-OFF}"
   "-DAMSS_RHS_TILE_J=${AMSS_RHS_TILE_J:-0}"
   "-DAMSS_RHS_TILE_K=${AMSS_RHS_TILE_K:-0}"

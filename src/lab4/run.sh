@@ -8,14 +8,18 @@
 #   AMSS_MPIEXEC      MPI launcher          (default: mpiexec)
 set -euo pipefail
 
-# Resolve the repository from this script, not from the caller's cwd.  OJ
-# runners commonly invoke an absolute script path from a temporary directory.
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="${AMSS_ROOT_DIR:-$SCRIPT_DIR}"
+# hpc/OJ may stage this script under /tmp while preserving the submitted
+# repository as the working directory.  AMSS_ROOT_DIR remains an optional
+# explicit override for wrappers that provide one.
+ROOT_DIR="${AMSS_ROOT_DIR:-$(pwd -P)}"
 case "$ROOT_DIR" in
   /*) ;;
-  *) ROOT_DIR="$SCRIPT_DIR/$ROOT_DIR" ;;
+  *) ROOT_DIR="$(pwd -P)/$ROOT_DIR" ;;
 esac
+if [[ ! -f "$ROOT_DIR/AMSS_NCKU_Program.py" ]]; then
+  echo "error: repository root does not contain AMSS_NCKU_Program.py: $ROOT_DIR" >&2
+  exit 2
+fi
 
 # Ansorg-TwoPuncture allocates large Fortran automatic arrays.  Some OJ
 # sandboxes reject ulimit changes; the executable can still report a useful
@@ -42,7 +46,6 @@ resolve_under_root() {
 AMSS_BUILD_DIR="$(resolve_under_root "${AMSS_BUILD_DIR:-$ROOT_DIR/build}")"
 AMSS_OUTPUT_ROOT="$(resolve_under_root "${AMSS_OUTPUT_ROOT:-$ROOT_DIR}")"
 AMSS_CACHE_DIR="$(resolve_under_root "${AMSS_CACHE_DIR:-$ROOT_DIR/twopuncture_cache}")"
-AMSS_MPIEXEC="${AMSS_MPIEXEC:-mpiexec}"
 # Runtime defaults matching the validated CPU path.  They are deliberately
 # environment-overridable for OJ machines with a different core budget.
 export AMSS_BATCH_STENCIL_B="${AMSS_BATCH_STENCIL_B:-2}"

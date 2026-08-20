@@ -300,27 +300,23 @@ end module point_derivs
     klo = 1
     khi = ex(3)-1
 #define FVAL(i,j,k) halo_get(i,j,k)
-    !$omp parallel do
 #include "fderivs_loop.fh"
 #undef FVAL
   else if (halo_active) then
     klo = 1
     khi = min(2, ex(3)-1)
 #define FVAL(i,j,k) halo_get(i,j,k)
-    !$omp parallel do
 #include "fderivs_loop.fh"
 #undef FVAL
     klo = 3
     khi = ex(3)-1
 #define FVAL(i,j,k) f(i,j,k)
-    !$omp parallel do
 #include "fderivs_loop.fh"
 #undef FVAL
   else
     klo = 1
     khi = ex(3)-1
 #define FVAL(i,j,k) f(i,j,k)
-    !$omp parallel do
 #include "fderivs_loop.fh"
 #undef FVAL
   end if
@@ -328,7 +324,6 @@ end module point_derivs
   klo = 1
   khi = ex(3)-1
 #define FVAL(i,j,k) fh(i,j,k)
-    !$omp parallel do
 #include "fderivs_loop.fh"
 #undef FVAL
 #endif
@@ -388,7 +383,6 @@ end module point_derivs
 
   fx = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -468,7 +462,6 @@ end module point_derivs
 
   fy = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -542,7 +535,6 @@ end module point_derivs
 
   fz = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -662,27 +654,23 @@ end module point_derivs
     klo = 1
     khi = ex(3)-1
 #define FVAL(i,j,k) halo_get(i,j,k)
-    !$omp parallel do
 #include "fdderivs_loop.fh"
 #undef FVAL
   else if (halo_active) then
     klo = 1
     khi = min(2, ex(3)-1)
 #define FVAL(i,j,k) halo_get(i,j,k)
-    !$omp parallel do
 #include "fdderivs_loop.fh"
 #undef FVAL
     klo = 3
     khi = ex(3)-1
 #define FVAL(i,j,k) f(i,j,k)
-    !$omp parallel do
 #include "fdderivs_loop.fh"
 #undef FVAL
   else
     klo = 1
     khi = ex(3)-1
 #define FVAL(i,j,k) f(i,j,k)
-    !$omp parallel do
 #include "fdderivs_loop.fh"
 #undef FVAL
   end if
@@ -690,7 +678,6 @@ end module point_derivs
   klo = 1
   khi = ex(3)-1
 #define FVAL(i,j,k) fh(i,j,k)
-    !$omp parallel do
 #include "fdderivs_loop.fh"
 #undef FVAL
 #endif
@@ -751,7 +738,6 @@ end module point_derivs
 
   fxx = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -822,7 +808,6 @@ end module point_derivs
 
   fyy = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -895,7 +880,6 @@ end module point_derivs
 
   fzz = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -968,7 +952,6 @@ end module point_derivs
 
   fxy = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -1042,7 +1025,6 @@ end module point_derivs
 
   fxz = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
@@ -1114,7 +1096,6 @@ end module point_derivs
 
   fyz = ZEO
 
-    !$omp parallel do
   do k=1,ex(3)-1
   do j=1,ex(2)-1
   do i=1,ex(1)-1
